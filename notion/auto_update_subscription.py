@@ -1,15 +1,11 @@
-from dotenv import load_dotenv
 import os
+from dotenv import load_dotenv
+from datetime import datetime, timedelta
+from loguru import logger
+from notion_client import Client
 
-# 加载.env文件
 load_dotenv()
 
-# 现有的导入语句
-from datetime import datetime, timedelta
-from notion_client import Client
-from loguru import logger
-
-# 初始化Notion客户端
 notion = Client(auth=os.getenv("NOTION_TOKEN"))
 # 数据库ID
 database_id = os.getenv("SUBSCRIPTION_DATABASE_ID")
