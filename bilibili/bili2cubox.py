@@ -379,10 +379,9 @@ def main():
     parser.add_argument("--redirect-host", type=str, help="重定向 webhook URL 的 host")
     parser.add_argument("--black-tag", type=str, help="命中该标签时将状态设置为filter")  # 新增参数
     parser.add_argument("--white-tag", type=str, help="命中该标签时将状态设置为new")  # 新增参数
-    parser.add_argument("--download-flag", action="store_true", help="启用下载标志")
+    parser.add_argument("--download-webhook-url", type=str, help="指定下载 webhook URL")
     parser.add_argument("--download-filter-status", type=str, default="download_filter", help="下载过滤状态")
     parser.add_argument("--download-wait-status", type=str, default="download_wait", help="下载等待状态")
-    parser.add_argument("--download-webhook-url", type=str, help="指定下载 webhook URL")
     args = parser.parse_args()
 
     if args.init_db:
@@ -399,9 +398,6 @@ def main():
         query = query.filter(Fetcher.webhook_url != args.exclude_webhook_url)
     elif args.download_webhook_url:
         query = query.filter(Fetcher.webhook_url == args.download_webhook_url)
-        args.download_flag = True  # 自动启用下载标志
-    else:
-        query = query.filter(Fetcher.webhook_url != "bilidance")
 
     fetchers = query.order_by(Fetcher.last_run).limit(args.fetch_count).all()
 
@@ -427,7 +423,7 @@ def main():
                     video,
                     args.black_tag,
                     args.white_tag,
-                    args.download_flag,
+                    args.download_webhook_url is not None,  # 使用 download_webhook_url 来判断是否为下载模式
                     args.download_filter_status,
                     args.download_wait_status,
                 )
