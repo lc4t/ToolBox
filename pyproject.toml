@@ -13,6 +13,10 @@ python-dotenv = "^1.0.1"
 loguru = "^0.7.2"
 pyzotero = "^1.5.25"
 prettytable = "^3.11.0"
+feedparser = "^6.0.11"
+requests = "^2.32.3"
+sqlalchemy = "^2.0.35"
+pymysql = "^1.1.1"
 
 [tool.poetry.group.dev.dependencies]
 isort = "^5.12.0"
@@ -29,7 +33,7 @@ update-subscriptions = "toolbox.notion.auto_update_subscription:update_subscript
 zotery-tagger = "zotero.zotery_tagger:main"
 
 [tool.black]
-line-length = 120
+line-length = 140
 
 [tool.flake8]
-max-line-length = 120
+max-line-length = 140
