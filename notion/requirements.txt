@@ -1,0 +1,4 @@
+loguru
+notion-client
+python-dotenv
+xalpha

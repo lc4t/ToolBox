@@ -5,3 +5,5 @@
 poetry.lock
 zotero/Takeout
 *.log
+__pycache__/
+
