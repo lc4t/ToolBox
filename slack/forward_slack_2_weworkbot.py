@@ -1,3 +1,4 @@
+import argparse
 import os
 import time
 
@@ -22,14 +23,14 @@ slack_client = WebClient(token=SLACK_BOT_TOKEN)
 logger.add("slack_to_wechat.log", rotation="500 MB")  # 设置日志文件，最大500MB
 
 
-def fetch_latest_messages(since_ts=None):
+def fetch_latest_messages(since_ts=None, message_count=5):
     """
     从Slack频道获取最新的消息
     """
     logger.info("正在从Slack频道获取最新消息...")
     try:
-        # 获取指定频道的最新5条消息
-        response = slack_client.conversations_history(channel=SLACK_CHANNEL_ID, limit=5, oldest=since_ts)
+        # 获取指定频道的最新消息
+        response = slack_client.conversations_history(channel=SLACK_CHANNEL_ID, oldest=since_ts, limit=message_count)
         if response["ok"]:
             logger.info("成功获取消息。")
             return response["messages"]
@@ -64,30 +65,42 @@ def post_to_wework(message):
         logger.exception("转发消息到企业微信时发生错误。")
 
 
-def main():
+def main(message_count=5):
     """
     主函数：定期拉取Slack消息并转发到企业微信
     """
     logger.info("Slack消息转发到企业微信脚本已启动。")
-    last_message_ts = str(time.time())  # 记录脚本启动时的时间戳
+    last_message_ts = None  # 记录最后一条处理过的消息时间戳
     while True:
         logger.debug("正在检查是否有新消息...")
         # 获取最新的消息
-        messages = fetch_latest_messages(since_ts=last_message_ts)
+        messages = fetch_latest_messages(since_ts=last_message_ts, message_count=message_count)
+
+        # 输出所有获取到的消息
+        for message in messages:
+            logger.info(f"获取到的消息: {message}")
 
         # 只转发新的消息
         for message in reversed(messages):
             message_ts = message.get("ts", "")
-            if message_ts > last_message_ts:
+            if last_message_ts is None or message_ts > last_message_ts:
+                # 拼接消息中的所有文本部分
                 message_text = message.get("text", "")
+                if "blocks" in message:
+                    for block in message["blocks"]:
+                        if block["type"] == "section" and "text" in block:
+                            message_text += "\n" + block["text"]["text"]
                 logger.info(f"检测到新消息: {message_text}")
                 post_to_wework(message_text)
                 last_message_ts = message_ts
 
         # 每隔10秒轮询一次
-        # logger.debug("10秒后再次检查新消息。")
+        logger.info("10秒后再次检查新消息。")
         time.sleep(10)
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="从Slack获取消息并转发到企业微信")
+    parser.add_argument("--message_count", type=int, default=0, help="要获取的历史消息条目数")
+    args = parser.parse_args()
+    main(message_count=args.message_count)
