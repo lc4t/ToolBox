@@ -27,6 +27,10 @@ def fetch_latest_messages(since_ts=None, message_count=5):
     """
     从Slack频道获取最新的消息
     """
+    if message_count <= 0:
+        logger.info("message_count 为 0，不获取任何消息。")
+        return []
+
     logger.info("正在从Slack频道获取最新消息...")
     try:
         # 获取指定频道的最新消息
@@ -101,6 +105,6 @@ def main(message_count=5):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="从Slack获取消息并转发到企业微信")
-    parser.add_argument("--message_count", type=int, default=0, help="要获取的历史消息条目数")
+    parser.add_argument("--message_count", type=int, default=5, help="要获取的历史消息条目数")
     args = parser.parse_args()
     main(message_count=args.message_count)
