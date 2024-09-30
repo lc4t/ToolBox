@@ -4,3 +4,4 @@
 .venv/
 poetry.lock
 zotero/Takeout
+*.log
