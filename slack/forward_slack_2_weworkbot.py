@@ -5,6 +5,7 @@ import requests
 from dotenv import load_dotenv
 from loguru import logger
 from slack_sdk import WebClient
+from slack_sdk.errors import SlackApiError
 
 # 加载环境变量
 load_dotenv()
@@ -35,6 +36,9 @@ def fetch_latest_messages(since_ts=None):
         else:
             logger.error(f"获取消息时出错: {response['error']}")
             return []
+    except SlackApiError as e:
+        logger.error(f"Slack API 错误: {e.response['error']}")
+        return []
     except Exception as e:
         logger.exception("从Slack获取消息失败。")
         return []
@@ -54,6 +58,8 @@ def post_to_wework(message):
             logger.info("消息成功转发到企业微信。")
         else:
             logger.error(f"转发消息到企业微信失败，状态码: {response.status_code}, 响应: {response.text}")
+    except requests.exceptions.RequestException as e:
+        logger.error(f"网络错误: {e}")
     except Exception as e:
         logger.exception("转发消息到企业微信时发生错误。")
 
@@ -65,7 +71,7 @@ def main():
     logger.info("Slack消息转发到企业微信脚本已启动。")
     last_message_ts = str(time.time())  # 记录脚本启动时的时间戳
     while True:
-        logger.info("正在检查是否有新消息...")
+        logger.debug("正在检查是否有新消息...")
         # 获取最新的消息
         messages = fetch_latest_messages(since_ts=last_message_ts)
 
@@ -79,7 +85,7 @@ def main():
                 last_message_ts = message_ts
 
         # 每隔10秒轮询一次
-        logger.info("10秒后再次检查新消息。")
+        # logger.debug("10秒后再次检查新消息。")
         time.sleep(10)
 
 
