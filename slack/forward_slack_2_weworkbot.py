@@ -28,8 +28,8 @@ def fetch_latest_messages(since_ts=None, message_count=5):
     从Slack频道获取最新的消息
     """
     if message_count <= 0:
-        logger.info("message_count 为 0，不获取任何消息。")
-        return []
+        logger.info("message_count 为 0，仅获取自上次检查以来的新消息。")
+        message_count = None  # 将message_count设置为None，以获取所有新消息
 
     logger.info("正在从Slack频道获取最新消息...")
     try:
@@ -44,7 +44,7 @@ def fetch_latest_messages(since_ts=None, message_count=5):
     except SlackApiError as e:
         logger.error(f"Slack API 错误: {e.response['error']}")
         return []
-    except Exception as e:
+    except Exception:
         logger.exception("从Slack获取消息失败。")
         return []
 
@@ -75,20 +75,22 @@ def main(message_count=5):
     """
     logger.info("Slack消息转发到企业微信脚本已启动。")
     last_message_ts = None  # 记录最后一条处理过的消息时间戳
+
+    # 初始化时，如果message_count > 0，则获取历史消息
+    if message_count > 0:
+        messages = fetch_latest_messages(message_count=message_count)
+        if messages:
+            last_message_ts = messages[0].get("ts", "")
+
     while True:
         logger.debug("正在检查是否有新消息...")
         # 获取最新的消息
-        messages = fetch_latest_messages(since_ts=last_message_ts, message_count=message_count)
+        new_messages = fetch_latest_messages(since_ts=last_message_ts, message_count=None)
 
-        # 输出所有获取到的消息
-        for message in messages:
-            logger.info(f"获取到的消息: {message}")
-
-        # 只转发新的消息
-        for message in reversed(messages):
+        # 处理新消息
+        for message in reversed(new_messages):
             message_ts = message.get("ts", "")
             if last_message_ts is None or message_ts > last_message_ts:
-                # 拼接消息中的所有文本部分
                 message_text = message.get("text", "")
                 if "blocks" in message:
                     for block in message["blocks"]:

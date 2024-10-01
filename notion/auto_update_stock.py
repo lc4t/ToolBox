@@ -47,6 +47,7 @@ def query_current_value(asset_type: str, asset_code: str):
 
     elif asset_type in ["基金", "债券"]:
         fund = xa.fundinfo(asset_code)
+        print(fund)
         current_value = fund.price.iloc[-1]["netvalue"]
     else:
         raise ValueError(f"未知的资产类型: {asset_type}")
