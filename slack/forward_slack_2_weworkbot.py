@@ -27,9 +27,11 @@ def fetch_latest_messages(since_ts=None, message_count=5):
     """
     从Slack频道获取最新的消息
     """
-    if message_count <= 0:
-        logger.info("message_count 为 0，仅获取自上次检查以来的新消息。")
+    if message_count is None or message_count <= 0:
+        logger.info("message_count 为 None 或 0，获取所有可用的新消息。")
         message_count = None  # 将message_count设置为None，以获取所有新消息
+    else:
+        logger.info(f"获取最新的 {message_count} 条消息。")
 
     logger.info("正在从Slack频道获取最新消息...")
     try:
@@ -77,7 +79,7 @@ def main(message_count=5):
     last_message_ts = None  # 记录最后一条处理过的消息时间戳
 
     # 初始化时，如果message_count > 0，则获取历史消息
-    if message_count > 0:
+    if message_count is not None and message_count > 0:
         messages = fetch_latest_messages(message_count=message_count)
         if messages:
             last_message_ts = messages[0].get("ts", "")
