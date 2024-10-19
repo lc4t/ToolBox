@@ -31,8 +31,9 @@ def fetch_latest_messages(since_ts=None, message_count=5):
     try:
         # 获取指定频道的最新消息
         response = slack_client.conversations_history(
-            channel=SLACK_CHANNEL_ID, oldest=since_ts, limit=message_count, inclusive=False  # 确保不包括 since_ts 对应的消息
+            channel=SLACK_CHANNEL_ID, limit=message_count, oldest=since_ts, inclusive=False  # 确保不包括 since_ts 对应的消息
         )
+
         if response["ok"]:
             messages = response["messages"]
             logger.info(f"成功获取 {len(messages)} 条消息。")
@@ -75,22 +76,22 @@ def main(message_count=None):
     logger.info("Slack消息转发到企业微信脚本已启动。")
     last_message_ts = None  # 记录最后一条处理过的消息时间戳
 
-    # 初始化时，如果message_count > 0，则获取历史消息
+    # 初始化时，如果message_count > 0，则获取最新的message_count条历史消息
     if message_count is not None and message_count > 0:
-        logger.info(f"获取最近 {message_count} 条历史消息...")
+        logger.info(f"获取最新的 {message_count} 条历史消息...")
         messages = fetch_latest_messages(message_count=message_count)
         if messages:
             last_message_ts = messages[0].get("ts", "")
-            for message in reversed(messages):
+            for message in messages:  # 不需要reversed，因为messages已经是倒序的
                 process_and_forward_message(message)
-    elif message_count == 0:
-        logger.info("message_count 为 0，不获取历史消息，只监听新消息。")
+    else:
+        logger.info("不获取历史消息，只监听新消息。")
         # 获取最新的一条消息的时间戳，但不转发
         latest_messages = fetch_latest_messages(message_count=1)
         if latest_messages:
             last_message_ts = latest_messages[0].get("ts", "")
-    else:
-        logger.info("未指定 message_count，不获取历史消息，只监听新消息。")
+        else:
+            last_message_ts = str(time.time())  # 如果没有获取到消息，使用当前时间
 
     while True:
         logger.debug("正在检查是否有新消息...")
@@ -103,7 +104,7 @@ def main(message_count=None):
             logger.info(f"更新 last_message_ts 为: {last_message_ts}")
 
             # 处理新消息
-            for message in reversed(new_messages):
+            for message in new_messages:  # 不需要reversed，因为new_messages已经是倒序的
                 process_and_forward_message(message)
         else:
             # 如果没有新消息，也更新 last_message_ts
@@ -117,13 +118,37 @@ def main(message_count=None):
 
 
 def process_and_forward_message(message):
+    # 输出消息的原始内容
+    logger.info(f"原始消息内容: {message}")
+
+    # 获取消息文本
     message_text = message.get("text", "")
-    if "blocks" in message:
-        for block in message["blocks"]:
-            if block["type"] == "section" and "text" in block:
-                message_text += "\n" + block["text"]["text"]
-    logger.info(f"处理消息: {message_text}")
-    post_to_wework(message_text)
+
+    # 初始化 issue_title
+    issue_title = ""
+
+    # 处理消息中的块结构（如果存在）
+    blocks_to_check = []
+    if "attachments" in message:
+        for attachment in message["attachments"]:
+            if "blocks" in attachment:
+                blocks_to_check.extend(attachment["blocks"])
+    elif "blocks" in message:
+        blocks_to_check = message["blocks"]
+
+    for block in blocks_to_check:
+        if block["type"] == "section" and "text" in block:
+            block_text = block["text"].get("text", "")
+            if "linear.app" in block_text and "|" in block_text:
+                # 提取 issue 标题
+                issue_title = block_text.split("|")[1].strip(">")
+                break
+
+    # 组合最终消息
+    final_message = f"{message_text}\n{issue_title}".strip()
+
+    logger.info(f"处理后的消息文本: {final_message}")
+    post_to_wework(final_message)
 
 
 if __name__ == "__main__":
