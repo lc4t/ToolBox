@@ -2,6 +2,7 @@ import argparse
 import itertools
 import os
 import sys
+import time
 from datetime import datetime, timedelta
 from typing import List, Optional
 
@@ -13,7 +14,7 @@ from tabulate import tabulate
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from finance.config import get_notifiers
+from finance.config import get_etf_name, get_notifiers
 from finance.fetcher import get_and_save_etf_data
 from finance.logger import logger
 from finance.message_builder import build_message
@@ -33,13 +34,14 @@ class ETFStrategy(bt.Strategy):
         ("short_period", 10),  # 默认短期均线为10日
         ("long_period", 20),  # 默认长期均线为20日
         ("stop_loss", 0.05),  # 默认止损为5%
-        ("atr_period", 14),  # ATR周期
+        ("atr_period", None),  # 修改默认值为 None
         ("atr_multiplier", 2.5),  # ATR倍数
         ("use_atr_stop", True),  # 是否使用ATR止损
         ("cash_ratio", 0.95),  # 使用95%的可用资金
         ("enable_crossover_sell", True),  # 是否启用均线下穿卖出
         ("debug", False),  # debug模式开关
         ("symbol", None),  # ETF代码
+        ("name", None),  # ETF名称
         ("notifiers", {}),  # 通知器字典
         ("signal_date", None),  # 信号日期
         ("notify_date", None),  # 修改参数名
@@ -55,16 +57,23 @@ class ETFStrategy(bt.Strategy):
         self.cash = self.broker.getvalue()
         self.highest_price = 0
 
+        # 设置 ATR 周期
+        atr_period = self.params.atr_period
+        if atr_period is None:
+            atr_period = self.params.long_period  # 如果未指定，使用长期均线周期
+            if self.params.debug:
+                logger.debug(f"ATR周期未指定，使用长期均线周期: {atr_period}")
+
         # 添加移动平均线指标
-        self.sma_short = bt.indicators.SimpleMovingAverage(
+        self.sma_short = bt.indicators.ExponentialMovingAverage(
             self.datas[0], period=self.params.short_period
         )
-        self.sma_long = bt.indicators.SimpleMovingAverage(
+        self.sma_long = bt.indicators.ExponentialMovingAverage(
             self.datas[0], period=self.params.long_period
         )
 
-        # 添加ATR指标
-        self.atr = bt.indicators.ATR(self.datas[0], period=self.params.atr_period)
+        # 添加ATR指标，使用处理后的 atr_period
+        self.atr = bt.indicators.ATR(self.datas[0], period=atr_period)
 
         # 交叉信号
         self.crossover = bt.indicators.CrossOver(self.sma_short, self.sma_long)
@@ -104,6 +113,7 @@ class ETFStrategy(bt.Strategy):
         # 准备基础信号数据
         signal_data = {
             "symbol": self.params.symbol,
+            "name": self.params.name,  # 添加ETF名称
             "date": current_date,
             "price": self.dataclose[0],
             "sma_short": self.sma_short[0],
@@ -160,6 +170,10 @@ class ETFStrategy(bt.Strategy):
                     }
                 )
 
+                # 生成交易记录表格
+                trade_table = self.get_trade_table()
+                signal_data["trade_table"] = trade_table  # 添加交易记录表格到信号数据中
+
                 message = build_message(signal_data, holding_data)
                 if self.params.debug:
                     logger.debug(f"准备发送的消息内容: {message}")
@@ -182,7 +196,7 @@ class ETFStrategy(bt.Strategy):
         # 添加日期过滤，确保每个日期只发送一次通知
         if hasattr(self, "last_signal_date") and current_date == self.last_signal_date:
             logger.debug(f"跳过重复通知 - 日期: {current_date}")
-            return  # 如果今天已经发过信号了，就不再发送
+            return  # 如果今已经发过信号了，就不再发送
 
         if self.order:
             return
@@ -190,6 +204,7 @@ class ETFStrategy(bt.Strategy):
         # 准备基础信号数据
         signal_data = {
             "symbol": self.params.symbol,
+            "name": self.params.name,  # 添加ETF名称
             "date": current_date,
             "price": self.dataclose[0],
             "sma_short": self.sma_short[0],
@@ -365,7 +380,7 @@ class ETFStrategy(bt.Strategy):
                         "signal_details": (
                             f"均线下穿卖出指标:\n"
                             f"- 短期均线(MA{self.params.short_period}): {self.sma_short[0]:.3f}\n"
-                            f"- 长期均线(MA{self.params.long_period}): {self.sma_long[0]:.3f}\n"
+                            f"- 长均线(MA{self.params.long_period}): {self.sma_long[0]:.3f}\n"
                             f"- 均线差值: {(self.sma_short[0] - self.sma_long[0]):.3f}\n"
                             f"- ATR({self.params.atr_period}): {self.atr[0]:.3f}\n"
                             f"- 当前价格: {self.dataclose[0]:.3f}\n"
@@ -502,18 +517,18 @@ class ETFStrategy(bt.Strategy):
                 else:
                     indicator_condition = "未知条件"
 
-                # 记录卖出交易
+                # 记录卖出交易，修改这里使用统一的键名
                 self.trades.append(
                     {
                         "类型": "卖出",
                         "日期": self.data.datetime.date(0),
                         "价格": order.executed.price,
                         "数量": -order.executed.size,
-                        "获得资金": sell_value,
+                        "消耗资金": sell_value,  # 修改这里，统一使用 '消耗资金'
                         "手续费": commission,
                         "收益": profit,
                         "剩余资金": self.broker.getcash(),
-                        "指标条件": indicator_condition,  # 保存实际的指标条件
+                        "指标条件": indicator_condition,
                     }
                 )
 
@@ -568,22 +583,21 @@ class ETFStrategy(bt.Strategy):
                             f"MA{self.params.short_period}({self.sma_short[0]:.3f}) > MA{self.params.long_period}({self.sma_long[0]:.3f})",
                         ]
                     )
-                else:
+                else:  # 卖出
                     table_data.append(
                         [
                             trade["类型"],
                             trade["日期"],
                             f"{trade['价格']:.3f}",
                             f"{trade['数量']:.0f}",
-                            f"{trade['获得资金']:.4f}",
+                            f"{trade['消耗资金']:.4f}",  # 修改这里，统一使用 '消耗资金'
                             f"{trade['手续费']:.4f}",
                             f"{trade['收益']:.4f}",
                             f"{trade['剩余资金']:.4f}",
-                            trade["指标条件"],  # 使用保存的指标条件
+                            trade["指标条件"],
                         ]
                     )
 
-            # 将打印操作移到循环外
             print(
                 tabulate(
                     table_data,
@@ -603,16 +617,97 @@ class ETFStrategy(bt.Strategy):
                 )
             )
 
+    # 添加一个新方法来生成交易记录表格
+    def get_trade_table(self):
+        if not self.trades:
+            return "没有发生交易"
+
+        headers = [
+            "类型",
+            "日期",
+            "价格",
+            "数量",
+            "消耗/获得资金",
+            "手续费",
+            "收益",
+            "剩余资金",
+            "指标条件",
+        ]
+        table_data = []
+        for trade in self.trades:
+            if trade["类型"] == "买入":
+                table_data.append(
+                    [
+                        trade["类型"],
+                        str(trade["日期"]),
+                        f"{trade['价格']:.3f}",
+                        f"{trade['数量']:.0f}",
+                        f"{trade['消耗资金']:.4f}",
+                        f"{trade['手续费']:.4f}",
+                        "-",
+                        f"{trade['剩余资金']:.4f}",
+                        f"MA{self.params.short_period}({self.sma_short[0]:.3f}) > MA{self.params.long_period}({self.sma_long[0]:.3f})",
+                    ]
+                )
+            else:  # 卖出
+                table_data.append(
+                    [
+                        trade["类型"],
+                        str(trade["日期"]),
+                        f"{trade['价格']:.3f}",
+                        f"{trade['数量']:.0f}",
+                        f"{trade['消耗资金']:.4f}",  # 修改这里，统一使用 '消耗资金'
+                        f"{trade['手续费']:.4f}",
+                        f"{trade['收益']:.4f}",
+                        f"{trade['剩余资金']:.4f}",
+                        trade["指标条件"],
+                    ]
+                )
+
+        return "\n交易记录:\n" + tabulate(
+            table_data,
+            headers=headers,
+            tablefmt="grid",
+            colalign=(
+                "left",  # 类型
+                "left",  # 日期
+                "right",  # 价格
+                "right",  # 数量
+                "right",  # 消耗/获得资金
+                "right",  # 手续费
+                "right",  # 收益
+                "right",  # 剩余资金
+                "left",  # 指标条件
+            ),
+        )
+
 
 # 获取ETF数据
 def get_etf_data(symbol, start_date=None):
     """
     获取ETF数据，总是获取全部历史数据，start_date 只用回测过滤
     """
+    # 添加市场后缀处理
+    if not symbol.endswith((".SZ", ".SS", ".BJ")):
+        if symbol.startswith(("15", "16", "18")):  # 深交所ETF
+            symbol = f"{symbol}.SZ"
+        elif symbol.startswith(("51", "56", "58")):  # 上交所ETF
+            symbol = f"{symbol}.SS"
+        else:
+            logger.warning(f"无法确定 {symbol} 的市场，将尝试作为深市ETF处理")
+            symbol = f"{symbol}.SZ"
+
+    logger.debug(f"处理ETF代码: {symbol}")
+
+    # 获取ETF名称
+    etf_name = get_etf_name(symbol)
+    logger.debug(f"获取到ETF名称: {etf_name}")
+
     script_dir = os.path.dirname(os.path.abspath(__file__))
     downloads_dir = os.path.join(script_dir, "downloads")
     os.makedirs(downloads_dir, exist_ok=True)
 
+    # 使用完整的代码（包含后缀）作为文件名
     csv_file = os.path.join(downloads_dir, f"etf_data_{symbol}.csv")
 
     try:
@@ -623,7 +718,7 @@ def get_etf_data(symbol, start_date=None):
             existing_data["日期"] = pd.to_datetime(existing_data["日期"]).dt.normalize()
             latest_date = existing_data["日期"].max()
 
-            # 如果最新数据不是昨天或更新，则需更新
+            # 如果最新数不是昨天或更新，则需更新
             yesterday = pd.Timestamp.now().normalize() - pd.Timedelta(days=1)
             if latest_date.date() < yesterday.date():
                 need_update = True
@@ -635,10 +730,10 @@ def get_etf_data(symbol, start_date=None):
             logger.info("数据文件不存在，需要获取数据")
 
         if need_update:
-            # 使用 fetcher 获取数据
+            # 使用带市场后缀的代码获取数据
             get_and_save_etf_data(
-                symbol,
-                "2000-01-01",  # 使用较早的日期以获取全部历史数据
+                symbol,  # 使用带市场后缀的代码
+                "2000-01-01",
                 datetime.now().strftime("%Y-%m-%d"),
             )
 
@@ -669,6 +764,9 @@ def get_etf_data(symbol, start_date=None):
         numeric_columns = ["open", "high", "low", "close", "volume"]
         for col in numeric_columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
+
+        # 添加ETF名称
+        df.name = etf_name
 
         # 如果指定了回测开始日期，则过滤数据
         if start_date:
@@ -709,6 +807,9 @@ def run_backtest(
     if data is None:
         return None
 
+    # 获取ETF名称
+    etf_name = getattr(data, "name", symbol)
+
     # 日期过滤，确保无时区
     start_date = pd.to_datetime(start_date).tz_localize(None)
     data = data[(data.index >= start_date)]
@@ -732,6 +833,7 @@ def run_backtest(
     cerebro.addstrategy(
         ETFStrategy,
         symbol=symbol,
+        name=etf_name,  # 添加ETF名称
         short_period=short_period,
         long_period=long_period,
         stop_loss=stop_loss,
@@ -861,7 +963,7 @@ if __name__ == "__main__":
         "--long_period_range",
         type=str,
         default="26",
-        help="长期均线范围，逗号分隔或短横线表示范围",
+        help="长期均线范围，逗号分隔或短横��表示范围",
     )
     parser.add_argument(
         "--stop_loss_range",
@@ -878,8 +980,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--atr_period",
         type=int,
-        default=14,
-        help="ATR计算周期",
+        help="ATR计算周期，默认使用长期均线周期",
+        default=None,
     )
     parser.add_argument(
         "--atr_multiplier_range",
@@ -984,6 +1086,12 @@ if __name__ == "__main__":
     if args.atr_multiplier_range:
         args.use_atr_stop = True
 
+    # 在运行回测前添加 ATR 周期的处理
+    if args.atr_period is None:
+        # 如果用户没有指定 ATR 周期，使用长期均线的值
+        args.atr_period = long_period_range[0]  # 使用第一个长期均线值
+        logger.debug(f"ATR周期未指定，使用长期均线周期: {args.atr_period}")
+
     # 运行回测
     results = optimize_parameters(
         symbol,
@@ -992,7 +1100,7 @@ if __name__ == "__main__":
         short_period_range,
         long_period_range,
         stop_loss_range,
-        args.atr_period,
+        args.atr_period,  # 这里使用处理后的 atr_period
         atr_multiplier_range,
         args.use_atr_stop,
         cash_ratio_range,

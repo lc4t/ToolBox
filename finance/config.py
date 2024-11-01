@@ -17,6 +17,25 @@ SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 SMTP_USERNAME = os.getenv("SMTP_USERNAME", "")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 
+# ETF代码和名称的映射
+ETF_NAMES = {
+    "512800": "银行ETF",
+    "513380": "恒生科技ETF龙头",
+    "159915": "创业板ETF",
+    "510300": "300ETF",
+    "159929": "医药ETF",
+    "159920": "恒生ETF",
+    "560510": "中证A500ETF",
+    "159941": "纳指ETF",
+}
+
+
+def get_etf_name(code: str) -> str:
+    """获取ETF的中文名称"""
+    # 移除可能的市场后缀
+    code = code.split(".")[0]
+    return ETF_NAMES.get(code, code)  # 如果找不到对应的名称，返回代码本身
+
 
 def get_notifiers(
     notifier_types: List[str],
