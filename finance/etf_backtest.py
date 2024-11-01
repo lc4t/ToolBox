@@ -876,7 +876,7 @@ def optimize_parameters(
     short_period_range,
     long_period_range,
     stop_loss_range,
-    atr_period,
+    atr_period,  # 这个参数可以是 None
     atr_multiplier_range,
     use_atr_stop,
     cash_ratio_range,
@@ -901,7 +901,14 @@ def optimize_parameters(
         cash_ratio_range,
     ):
         if short_period >= long_period:
-            continue  # 跳过短期均线大于或等于长期均线的情
+            continue  # 跳过短期均线大于或等于长期均线的情况
+
+        # 如果用户没有指定 ATR 周期，使用当前参数组合的长期均线周期
+        current_atr_period = atr_period if atr_period is not None else long_period
+        if debug:
+            logger.debug(
+                f"当前参数组合 - 长期均线: {long_period}, ATR周期: {current_atr_period}"
+            )
 
         result = run_backtest(
             symbol,
@@ -910,7 +917,7 @@ def optimize_parameters(
             short_period,
             long_period,
             stop_loss,
-            atr_period,
+            current_atr_period,  # 使用当前参数组合的 ATR 周期
             atr_multiplier,
             use_atr_stop,
             cash_ratio,
@@ -963,7 +970,7 @@ if __name__ == "__main__":
         "--long_period_range",
         type=str,
         default="26",
-        help="长期均线范围，逗号分隔或短横��表示范围",
+        help="长期均线范围，逗号分隔或短横线表示范围",
     )
     parser.add_argument(
         "--stop_loss_range",
