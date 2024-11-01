@@ -1,0 +1,24 @@
+Subject: ETF交易信号 - {symbol} - {date}
+
+ETF代码: {symbol}
+日期: {date}
+当前价格: {price:.3f}
+
+信号类型: {signal_type}
+
+{signal_details}
+
+持仓状态:
+{position_details}
+{holding_details}
+
+策略参数:
+- 短期均线(MA{short_period}): {sma_short:.3f}
+- 长期均线(MA{long_period}): {sma_long:.3f}
+- ATR({atr_period}): {atr:.3f}
+- ATR止损倍数: {atr_multiplier}
+- 止损比例: {stop_loss:.1%}
+
+{signal_description}
+
+注意：此邮件由自动交易系统生成，仅供参考。请结合市场情况自行判断。 

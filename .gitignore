@@ -1,9 +1,52 @@
+# 环境变量文件
 .env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# 虚拟环境
+venv/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 其他文件
 .DS_Store
 *.pyc
-.venv/
 poetry.lock
 zotero/Takeout
 *.log
-__pycache__/
+*.log.*
+*.zip
+
+# 数据文件目录
+finance/downloads/
+
+# 日志文件目录
+logs/
+*.log
+*.log.*
+*.zip
 
