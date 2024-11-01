@@ -1,39 +1,22 @@
-[tool.poetry]
+[project]
 name = "toolbox"
 version = "0.1.0"
-description = "lc4t's toolbox"
-authors = ["lc4t <lc4t0.0@gmail.com>"]
+description = "Add your description here"
 readme = "README.md"
-packages = [{include = "toolbox"}]
-
-[tool.poetry.dependencies]
-python = "^3.9"
-notion-client = "^2.2.1"
-python-dotenv = "^1.0.1"
-loguru = "^0.7.2"
-pyzotero = "^1.5.25"
-prettytable = "^3.11.0"
-feedparser = "^6.0.11"
-requests = "^2.32.3"
-sqlalchemy = "^2.0.35"
-pymysql = "^1.1.1"
-
-[tool.poetry.group.dev.dependencies]
-isort = "^5.12.0"
-black = "^23.3.0"
-flake8 = "^6.0.0"
-pre-commit = "^3.3.0"
-
-[build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
-
-[tool.poetry.scripts]
-update-subscriptions = "toolbox.notion.auto_update_subscription:update_subscriptions"
-zotery-tagger = "zotero.zotery_tagger:main"
-
-[tool.black]
-line-length = 140
-
-[tool.flake8]
-max-line-length = 140
+requires-python = ">=3.8"
+dependencies = [
+    "backtrader>=1.9.78.123",
+    "feedparser>=6.0.11",
+    "loguru>=0.7.2",
+    "matplotlib>=3.7.5",
+    "notion-client>=2.2.1",
+    "pandas>=2.0.3",
+    "prettytable>=3.11.0",
+    "pymysql>=1.1.1",
+    "python-dotenv>=1.0.1",
+    "pyzotero>=1.5.25",
+    "requests>=2.32.3",
+    "sqlalchemy>=2.0.36",
+    "tabulate>=0.9.0",
+    "yfinance>=0.2.48",
+]
