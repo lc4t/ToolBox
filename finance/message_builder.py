@@ -70,7 +70,7 @@ def build_message(
         f"回测开始: {signal_data['start_date']}\n"
         f"当前价格: {signal_data['price']:.3f}\n\n"
         f"信号类型: {signal_data['signal_type']}\n\n"
-        f"信号详情:\n{signal_data['signal_details']}\n\n"  # 这里直接使用了signal_details
+        f"信号详情:\n{signal_data['signal_details']}\n\n"  # 这里已经包含了过滤器状态
         f"持仓状态:\n{holding_details}\n\n"
         f"策略参数:\n"
         f"- MA{signal_data['short_period']}: {signal_data['sma_short']:.3f}\n"

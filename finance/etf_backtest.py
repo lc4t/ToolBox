@@ -4,7 +4,17 @@ import os
 import sys
 import time
 from datetime import datetime, timedelta
+from enum import Enum
 from typing import List, Optional
+
+
+class FilterMode(Enum):
+    """过滤器模式枚举类"""
+
+    BOTH = "both"  # 买入和卖出都过滤
+    BUY_ONLY = "buy_only"  # 只过滤买入
+    NONE = "none"  # 不过滤
+
 
 import backtrader as bt
 import matplotlib
@@ -51,6 +61,10 @@ class ETFStrategy(bt.Strategy):
         ("bbands_width_dynamic", False),  # 是否使用动态布林带宽度阈值（中位数倍数）
         ("trend_filter_period", 0),  # 趋势过滤器周期，0表示不使用
         ("signal_delay", 0),  # 信号滞后天数，0表示不滞后
+        ("adx_filter_mode", FilterMode.BOTH),  # ADX过滤器模式
+        ("bbands_filter_mode", FilterMode.BOTH),  # 布林带过滤器模式
+        ("trend_filter_mode", FilterMode.BOTH),  # 趋势过滤器模式
+        ("signal_delay_mode", FilterMode.BOTH),  # 信号滞后模式
     )
 
     def __init__(self):
@@ -120,6 +134,9 @@ class ETFStrategy(bt.Strategy):
                     self.bbands_width, period=self.params.bbands_period
                 )
 
+        # 记录是否是第一次运行next方法
+        self.first_next = True
+
     def next(self):
         # 获取当前日期和下一个交易日
         current_date = self.data.datetime.date(0)
@@ -127,6 +144,24 @@ class ETFStrategy(bt.Strategy):
             next_date = self.data.datetime.date(1)
         except IndexError:
             next_date = current_date
+
+        # 输出每天的状态调试信息
+        if self.params.debug:
+            logger.debug(
+                f"\n日期: {current_date} 的状态:\n"
+                f"- 当前价格: {self.dataclose[0]:.3f}\n"
+                f"- 短期均线: MA{self.params.short_period}={self.sma_short[0]:.3f}\n"
+                f"- 长期均线: MA{self.params.long_period}={self.sma_long[0]:.3f}\n"
+                f"- 均线差值: {(self.sma_short[0] - self.sma_long[0]):.3f}\n"
+                f"- 均线交叉: {self.crossover[0]}\n"
+                f"- 当前持仓: {'有' if self.position else '无'}"
+            )
+
+        # 检查信号生成条件
+        if self.crossover > 0:
+            logger.debug("生成买入信号")
+        elif self.crossover < 0:
+            logger.debug("生成卖出信号")
 
         # 准备止损策略说明
         stop_loss_strategy = (
@@ -196,15 +231,6 @@ class ETFStrategy(bt.Strategy):
                 f"将触发止损卖出。如果价格创新高，止损价格会相应提高。"
             )
 
-        # 保存最后一天的信号数据，供回测结束后使用
-        if next_date == current_date:
-            self.last_signal_data = signal_data
-            self.last_holding_data = holding_data
-
-        # 执行交易逻辑
-        if self.order:
-            return
-
         # 检查趋势过滤器条件
         trend_ok = True
         trend_filter_msg = []
@@ -212,24 +238,62 @@ class ETFStrategy(bt.Strategy):
         # ADX过滤器
         if self.params.adx_period > 0 and self.params.adx_threshold > 0:
             adx_ok = self.adx[0] > self.params.adx_threshold
-            trend_ok = trend_ok and adx_ok
+            if self.params.debug:
+                logger.debug(
+                    f"ADX过滤器检查:\n"
+                    f"- ADX值: {self.adx[0]:.2f}\n"
+                    f"- 阈值: {self.params.adx_threshold}\n"
+                    f"- 结果: {'通过' if adx_ok else '未通过'}\n"
+                    f"- 模式: {'买卖双向' if self.params.adx_filter_mode == FilterMode.BOTH else '仅买入' if self.params.adx_filter_mode == FilterMode.BUY_ONLY else '不过滤'}"
+                )
+            # 根据过滤模式决定是否应用过滤
+            if not self.position:  # 买入时
+                if self.params.adx_filter_mode in [
+                    FilterMode.BOTH,
+                    FilterMode.BUY_ONLY,
+                ]:
+                    trend_ok = trend_ok and adx_ok
+            else:  # 卖出时
+                if self.params.adx_filter_mode == FilterMode.BOTH:
+                    trend_ok = trend_ok and adx_ok
             trend_filter_msg.append(
                 f"ADX({self.params.adx_period}): {self.adx[0]:.2f} "
                 f"{'>' if adx_ok else '<='} {self.params.adx_threshold}"
+                f"{'[买入过滤]' if self.params.adx_filter_mode == FilterMode.BUY_ONLY else ''}"
             )
 
         # 布林带宽度过滤器
         if self.params.bbands_period > 0 and self.params.bbands_width_threshold > 0:
             if self.params.bbands_width_dynamic:
-                # 使用中位数的倍数
                 threshold = (
                     self.bbands_width_median[0] * self.params.bbands_width_threshold
                 )
                 bbands_ok = self.bbands_width[0] > threshold
+                if self.params.debug:
+                    logger.debug(
+                        f"布林带宽度过滤器检查(动态):\n"
+                        f"- 当前宽度: {self.bbands_width[0]:.2f}%\n"
+                        f"- 中位数: {self.bbands_width_median[0]:.2f}%\n"
+                        f"- 阈值倍数: {self.params.bbands_width_threshold}\n"
+                        f"- 最终阈值: {threshold:.2f}%\n"
+                        f"- 结果: {'通过' if bbands_ok else '未通过'}\n"
+                        f"- 模式: {'买卖双向' if self.params.bbands_filter_mode == FilterMode.BOTH else '仅买入' if self.params.bbands_filter_mode == FilterMode.BUY_ONLY else '不过滤'}"
+                    )
+                # 根据过滤模式决定是否应用过滤
+                if not self.position:  # 买入时
+                    if self.params.bbands_filter_mode in [
+                        FilterMode.BOTH,
+                        FilterMode.BUY_ONLY,
+                    ]:
+                        trend_ok = trend_ok and bbands_ok
+                else:  # 卖出时
+                    if self.params.bbands_filter_mode == FilterMode.BOTH:
+                        trend_ok = trend_ok and bbands_ok
                 trend_filter_msg.append(
                     f"布林带宽度({self.params.bbands_period}): {self.bbands_width[0]:.2f}% "
                     f"{'>' if bbands_ok else '<='} "
                     f"{threshold:.2f}% ({self.params.bbands_width_threshold}倍中位数)"
+                    f"{'[买入过滤]' if self.params.bbands_filter_mode == FilterMode.BUY_ONLY else ''}"
                 )
             else:
                 # 使用固定阈值
@@ -238,7 +302,178 @@ class ETFStrategy(bt.Strategy):
                     f"布林带宽度({self.params.bbands_period}): {self.bbands_width[0]:.2f}% "
                     f"{'>' if bbands_ok else '<='} {self.params.bbands_width_threshold}%"
                 )
-            trend_ok = trend_ok and bbands_ok
+                trend_ok = trend_ok and bbands_ok
+
+        # 趋势过滤器
+        if self.params.trend_filter_period > 0:
+            trend_ok = self.dataclose[0] > self.trend_sma[0]
+            if self.params.debug:
+                logger.debug(
+                    f"趋势过滤器检查:\n"
+                    f"- 当前价格: {self.dataclose[0]:.3f}\n"
+                    f"- MA{self.params.trend_filter_period}: {self.trend_sma[0]:.3f}\n"
+                    f"- 结果: {'通过' if trend_ok else '未通过'}\n"
+                    f"- 模式: {'买卖双向' if self.params.trend_filter_mode == FilterMode.BOTH else '仅买入' if self.params.trend_filter_mode == FilterMode.BUY_ONLY else '不过滤'}"
+                )
+            # 根据过滤模式决定是否应用过滤
+            if not self.position:  # 买入时
+                if self.params.trend_filter_mode in [
+                    FilterMode.BOTH,
+                    FilterMode.BUY_ONLY,
+                ]:
+                    trend_ok = trend_ok and trend_ok
+            else:  # 卖出时
+                if self.params.trend_filter_mode == FilterMode.BOTH:
+                    trend_ok = trend_ok and trend_ok
+            trend_filter_msg.append(
+                f"趋势过滤器({self.params.trend_filter_period}): 价格({self.dataclose[0]:.3f}) "
+                f"{'>' if trend_ok else '<='} MA{self.params.trend_filter_period}({self.trend_sma[0]:.3f})"
+                f"{'[买入过滤]' if self.params.trend_filter_mode == FilterMode.BUY_ONLY else ''}"
+            )
+
+        # 处理信号滞后
+        if self.params.signal_delay > 0:
+            if not self.position:  # 买入时
+                if self.params.signal_delay_mode in [
+                    FilterMode.BOTH,
+                    FilterMode.BUY_ONLY,
+                ]:
+                    if self.crossover > 0 or (  # 首次触发买入信号
+                        self.pending_buy_signal > 0  # 已经在等待中
+                        and self.sma_short[0] > self.sma_long[0]  # 维持买入条件
+                    ):
+                        self.pending_buy_signal += 1
+                        if self.params.debug:
+                            logger.debug(
+                                f"买入信号等待中:\n"
+                                f"- 已等待天数: {self.pending_buy_signal}\n"
+                                f"- 需要等待天数: {self.params.signal_delay}\n"
+                                f"- 触发条件: {'首次交叉' if self.crossover > 0 else '维持条件'}\n"
+                                f"- 短期均线 {self.sma_short[0]:.3f} > 长期均线 {self.sma_long[0]:.3f}"
+                            )
+                        if self.pending_buy_signal >= self.params.signal_delay:
+                            if self.params.debug:
+                                logger.debug("买入信号确认，将执行买入操作")
+                            # 先计算买入数量
+                            available_cash = (
+                                self.broker.getcash() * self.params.cash_ratio
+                            )
+                            size = int(available_cash / self.dataclose[0])
+
+                            # 执行买入操作
+                            if size > 0:
+                                self.order = self.buy(size=size)
+                                logger.info(
+                                    f"买入信号 - 日期: {current_date}, "
+                                    f"价格: {self.dataclose[0]:.2f}, "
+                                    f"数量: {size}, "
+                                    f"金额: {size * self.dataclose[0]:.2f}"
+                                )
+                            # 重置信号等待计数
+                            self.pending_buy_signal = 0
+                            return
+                        else:
+                            if self.params.debug:
+                                logger.debug("继续等待买入信号")
+                            return
+                    else:  # 信号消失
+                        if self.pending_buy_signal > 0:  # 之前有等待的信号
+                            if self.params.debug:
+                                logger.debug(
+                                    f"买入信号在等待期间消失:\n"
+                                    f"- 已等待天数: {self.pending_buy_signal}\n"
+                                    f"- 当前条件: 短期均线 {self.sma_short[0]:.3f} {'>' if self.sma_short[0] > self.sma_long[0] else '<='} 长期均线 {self.sma_long[0]:.3f}"
+                                )
+                            self.pending_buy_signal = 0
+                            return
+
+            else:  # 卖出时
+                if self.params.signal_delay_mode == FilterMode.BOTH:
+                    if self.crossover < 0 or (  # 首次触发卖出信号
+                        self.pending_sell_signal > 0  # 已经在等待中
+                        and (
+                            self.sma_short[0] < self.sma_long[0]  # 维持均线下穿条件
+                            or self.dataclose[0] <= stop_price  # 或维持止损条件
+                        )
+                    ):
+                        self.pending_sell_signal += 1
+                        if self.params.debug:
+                            logger.debug(
+                                f"卖出信号等待中:\n"
+                                f"- 已等待天数: {self.pending_sell_signal}\n"
+                                f"- 需要等待天数: {self.params.signal_delay}\n"
+                                f"- 触发条件: {'首次交叉' if self.crossover < 0 else '维持条件'}\n"
+                                f"- 短期均线 {self.sma_short[0]:.3f} < 长期均线 {self.sma_long[0]:.3f}\n"
+                                f"- 当前价格 {self.dataclose[0]:.3f} {'<=' if self.dataclose[0] <= stop_price else '>'} 止损价 {stop_price:.3f}"
+                            )
+                        if self.pending_sell_signal >= self.params.signal_delay:
+                            if self.params.debug:
+                                logger.debug("卖出信号确认，将执行卖出操作")
+                            # 执行卖出操作
+                            self.order = self.sell(size=self.position.size)
+                            # 设置卖出原因，供 notify_order 使用
+                            self.order.sell_reason = sell_reason
+                            logger.info(
+                                f"卖出信号 - 日期: {current_date}, "
+                                f"价格: {self.dataclose[0]:.2f}, "
+                                f"数量: {self.position.size}, "
+                                f"原因: {sell_reason}"
+                            )
+                            # 重置信号等待计数
+                            self.pending_sell_signal = 0
+                            return
+                        else:
+                            if self.params.debug:
+                                logger.debug("继续等待卖出信号")
+                            return
+                    else:  # 信号消失
+                        if self.pending_sell_signal > 0:  # 之前有等待的信号
+                            if self.params.debug:
+                                logger.debug(
+                                    f"卖出信号在等待期间消失:\n"
+                                    f"- 已等待天数: {self.pending_sell_signal}\n"
+                                    f"- 当前条件: 短期均线 {self.sma_short[0]:.3f} {'<' if self.sma_short[0] < self.sma_long[0] else '>='} 长期均线 {self.sma_long[0]:.3f}\n"
+                                    f"- 当前价格 {self.dataclose[0]:.3f} {'<=' if self.dataclose[0] <= stop_price else '>'} 止损价 {stop_price:.3f}"
+                                )
+                            self.pending_sell_signal = 0
+                            return
+
+        # 保存最后一天的信号数据，供回测结束后使用
+        if next_date == current_date:
+            # 检查是否有信号但被过滤
+            has_signal = False
+            if not self.position and self.crossover > 0:  # 有买入信号
+                has_signal = True
+                if not trend_ok:
+                    signal_data["signal_details"] += (
+                        f"\n过滤器阻止买入:\n" f"- {', '.join(trend_filter_msg)}"
+                    )
+            elif self.position and self.crossover < 0:  # 有卖出信号
+                has_signal = True
+                if not trend_ok:
+                    signal_data["signal_details"] += (
+                        f"\n过滤器阻止均线下穿卖出:\n"
+                        f"- {', '.join(trend_filter_msg)}"
+                    )
+
+            # 如果有过滤器启用但没有信号，也显示过滤器状态
+            if (not has_signal) and (
+                (self.params.adx_period > 0 and self.params.adx_threshold > 0)
+                or (
+                    self.params.bbands_period > 0
+                    and self.params.bbands_width_threshold > 0
+                )
+            ):
+                signal_data["signal_details"] += (
+                    f"\n当前过滤器状态:\n" f"- {', '.join(trend_filter_msg)}"
+                )
+
+            self.last_signal_data = signal_data
+            self.last_holding_data = holding_data
+
+        # 执行交易逻辑
+        if self.order:
+            return
 
         if not self.position:  # 没有持仓
             if self.crossover > 0:  # 买入信号
@@ -251,14 +486,14 @@ class ETFStrategy(bt.Strategy):
 
                 # 处理信号滞后
                 if self.params.signal_delay > 0:
-                    self.pending_buy_signal += 1
-                    if self.pending_buy_signal < self.params.signal_delay:
-                        logger.debug(
-                            f"买入信号等待中 - 日期: {current_date}, "
-                            f"已等待: {self.pending_buy_signal}天"
-                        )
-                        return
-                    logger.debug(f"买入信号确认 - 日期: {current_date}")
+                    if self.params.signal_delay_mode in [
+                        FilterMode.BOTH,
+                        FilterMode.BUY_ONLY,
+                    ]:
+                        if self.pending_buy_signal < self.params.signal_delay:
+                            return  # 继续等待
+                        # 达到等待天数后，重置计数并继续执行
+                        self.pending_buy_signal = 0
 
                 # 先计算买入数量
                 available_cash = self.broker.getcash() * self.params.cash_ratio
@@ -341,14 +576,11 @@ class ETFStrategy(bt.Strategy):
             if sell_signal:
                 # 处理信号滞后
                 if self.params.signal_delay > 0:
-                    self.pending_sell_signal += 1
-                    if self.pending_sell_signal < self.params.signal_delay:
-                        logger.debug(
-                            f"卖出信号等待中 - 日期: {current_date}, "
-                            f"已等待: {self.pending_sell_signal}天"
-                        )
-                        return
-                    logger.debug(f"卖出信号确认 - 日期: {current_date}")
+                    if self.params.signal_delay_mode == FilterMode.BOTH:
+                        if self.pending_sell_signal < self.params.signal_delay:
+                            return  # 继续等待
+                        # 达到等待天数后，重置计数并继续执行
+                        self.pending_sell_signal = 0
 
                 # 执行卖出操作
                 self.order = self.sell(size=self.position.size)
@@ -556,7 +788,7 @@ class ETFStrategy(bt.Strategy):
 # 获取ETF数据
 def get_etf_data(symbol, start_date=None):
     """
-    获取ETF数据，总是获取全部历史数据，start_date 只用回测过滤
+    获取ETF数据，总是获取全部历史数据，start_date 只用于回测过滤
     """
     # 添加市场后缀处理
     if not symbol.endswith((".SZ", ".SS", ".BJ")):
@@ -604,7 +836,7 @@ def get_etf_data(symbol, start_date=None):
             # 使用带市场后缀的代码获取数据
             get_and_save_etf_data(
                 symbol,  # 使用带市场后缀的代码
-                "2000-01-01",
+                "2000-01-01",  # 总是获取足够长的历史数据
                 datetime.now().strftime("%Y-%m-%d"),
             )
 
@@ -647,6 +879,9 @@ def get_etf_data(symbol, start_date=None):
                 f"回测数据范围：{df.index.min().date()} 到 {df.index.max().date()}"
             )
 
+        # 打印数据的日期范围
+        logger.debug(f"数据的日期范围：{df.index.min()} 到 {df.index.max()}")
+
         return df[numeric_columns]  # 只返回数值列
 
     except Exception as e:
@@ -677,20 +912,30 @@ def run_backtest(
     bbands_period=0,  # 添加布林带参数
     bbands_width_threshold=0.0,  # 添加布林带宽度阈值参数
     bbands_width_dynamic=False,  # 新增参数
+    adx_filter_mode=FilterMode.BOTH,  # 新增过滤器模式参数
+    bbands_filter_mode=FilterMode.BOTH,  # 新增过滤器模式参数
+    trend_filter_mode=FilterMode.BOTH,  # 新增过滤器模式参数
+    signal_delay_mode=FilterMode.BOTH,  # 新增过滤器模式参数
 ):
     cerebro = bt.Cerebro()
-
-    # 传入开始日期和结束日期，确保数据是最新
-    data = get_etf_data(symbol, start_date)
-    if data is None:
-        return None
 
     # 日期过滤，确保无时区
     start_date = pd.to_datetime(start_date).tz_localize(None)
     end_date = pd.to_datetime(end_date).tz_localize(None)
-    data = data[(data.index >= start_date) & (data.index <= end_date)]
 
-    # 创建PandasData feed
+    # 获取完整的历史数据
+    data = get_etf_data(symbol)  # 不传入 start_date，获取全部历史数据
+    if data is None:
+        return None
+
+    # 确保数据包含回测开始日期
+    if data.index[0] > start_date:
+        logger.error(
+            f"数据的开始日期({data.index[0].date()})晚于回测开始日期({start_date.date()})，无法进行回测"
+        )
+        return None
+
+    # 创建 PandasData feed，使用完整数据集，通过 fromdate 和 todate 控制回测区间
     feed = bt.feeds.PandasData(
         dataname=data,
         datetime=None,  # 使用引作日期
@@ -700,7 +945,12 @@ def run_backtest(
         close="close",
         volume="volume",
         openinterest=-1,  # 不使用持仓量
+        fromdate=start_date,  # 设置实际回测开始日期
+        todate=end_date,  # 设置回测结束日期
+        plot=False,  # 禁用绘图
     )
+
+    # 添加数据到cerebro
     cerebro.adddata(feed)
 
     cerebro.broker.setcash(initial_cash)
@@ -726,6 +976,10 @@ def run_backtest(
         bbands_width_dynamic=bbands_width_dynamic,  # 新增参数
         trend_filter_period=trend_filter_period,  # 传递趋势过滤器参数
         signal_delay=signal_delay,  # 传递信号滞后参数
+        adx_filter_mode=adx_filter_mode,  # 传递过滤器模式
+        bbands_filter_mode=bbands_filter_mode,  # 传递过滤器模式
+        trend_filter_mode=trend_filter_mode,  # 传递过滤器模式
+        signal_delay_mode=signal_delay_mode,  # 传递过滤器模式
     )
 
     cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name="sharpe")
@@ -754,8 +1008,8 @@ def run_backtest(
         logger.info("\n交易记录:")
         logger.info(f"\n{trade_table}")
 
-    # 如果有通知器，发送最后一天的信号数据和性能数据
-    if notifiers and hasattr(strat, "last_signal_data"):
+    # 如果有通知器，发送通知；如果没有，打印到控制台
+    if hasattr(strat, "last_signal_data"):
         # 添加性能数据到信号详情
         performance_text = "\n\n策略表现:\n"
         performance_text += f"- 夏普比率: {sharpe['sharperatio']:.4f}\n"
@@ -765,21 +1019,123 @@ def run_backtest(
         strat.last_signal_data["signal_details"] += performance_text
         strat.last_signal_data["trade_table"] = trade_table
 
-        # 发送通知
-        for notifier_name, notifier in notifiers.items():
-            message_type = (
-                "markdown" if isinstance(notifier, WecomBotNotifier) else "html"
-            )
-            message = build_message(
-                strat.last_signal_data,
-                strat.last_holding_data,
-                message_type=message_type,
-            )
-            response = notifier.send(message)
-            if debug:
-                logger.debug(
-                    f"通知发送结果 - 通知器: {notifier_name}, " f"返回值: {response}"
+        # 如果有通知器，发送通知
+        if notifiers:
+            for notifier_name, notifier in notifiers.items():
+                message_type = (
+                    "markdown" if isinstance(notifier, WecomBotNotifier) else "html"
                 )
+                message = build_message(
+                    strat.last_signal_data,
+                    strat.last_holding_data,
+                    message_type=message_type,
+                )
+                response = notifier.send(message)
+                if debug:
+                    logger.debug(
+                        f"通知发送结果 - 通知器: {notifier_name}, "
+                        f"返回值: {response}"
+                    )
+        else:
+            # 如果没有通知器，打印到控制台
+            logger.info("\n策略运行结果:")
+            logger.info(f"ETF代码: {symbol}")
+            logger.info(f"回测区间: {start_date} 到 {end_date}")
+
+            # 打印当前信号
+            logger.info("\n当前信号:")
+            logger.info(f"- 信号类型: {strat.last_signal_data['signal_type']}")
+            logger.info(f"- 当前价格: {strat.last_signal_data['price']:.3f}")
+            logger.info(f"- 持仓状态: {strat.last_signal_data['position_details']}")
+
+            # 打印信号详情（包括指标数据）
+            logger.info("\n信号详情:")
+            signal_details = strat.last_signal_data["signal_details"].split("\n")
+            for line in signal_details:
+                if line.strip():
+                    logger.info(f"{line}")
+
+            # 打印基础策略参数
+            logger.info("\n基础策略参数:")
+            logger.info(f"- 短期均线: MA{short_period}")
+            logger.info(f"- 长期均线: MA{long_period}")
+            logger.info(f"- 止损比例: {stop_loss:.1%}")
+            logger.info(f"- ATR周期: {atr_period}")
+            logger.info(f"- ATR倍数: {atr_multiplier}")
+            logger.info(f"- 使用ATR止损: {'是' if use_atr_stop else '否'}")
+            logger.info(f"- 资金使用比例: {cash_ratio:.1%}")
+            logger.info(
+                f"- 启用均线下穿卖出: {'是' if enable_crossover_sell else '否'}"
+            )
+
+            # 打印过滤器参数
+            logger.info("\n过滤器设置:")
+            if trend_filter_period > 0:
+                logger.info("\n1. 趋势过滤器:")
+                logger.info(f"- 均线周期: MA{trend_filter_period}")
+                logger.info(
+                    f"- 过滤模式: {'买卖双向过滤' if trend_filter_mode == FilterMode.BOTH else '仅买入过滤' if trend_filter_mode == FilterMode.BUY_ONLY else '不过滤'}"
+                )
+                logger.info(f"- 过滤条件: 价格必须高于MA{trend_filter_period}")
+
+            if signal_delay > 0:
+                logger.info("\n2. 信号滞后:")
+                logger.info(f"- 滞后天数: {signal_delay}天")
+                logger.info(
+                    f"- 滞后模式: {'买卖双向滞后' if signal_delay_mode == FilterMode.BOTH else '仅买入滞后' if signal_delay_mode == FilterMode.BUY_ONLY else '不滞后'}"
+                )
+                logger.info(f"- 滞后条件: 信号必须持续{signal_delay}天才执行交易")
+
+            if adx_period > 0:
+                logger.info("\n3. ADX过滤器:")
+                logger.info(f"- 指标周期: {adx_period}天")
+                logger.info(f"- 指标阈值: >{adx_threshold}")
+                logger.info(
+                    f"- 过滤模式: {'买卖双向过滤' if adx_filter_mode == FilterMode.BOTH else '仅买入过滤' if adx_filter_mode == FilterMode.BUY_ONLY else '不过滤'}"
+                )
+                logger.info(f"- 过滤条件: ADX必须大于{adx_threshold}")
+
+            if bbands_period > 0:
+                logger.info("\n4. 布林带过滤器:")
+                logger.info(f"- 指标周期: {bbands_period}天")
+                if bbands_width_dynamic:
+                    logger.info(f"- 宽度阈值: >{bbands_width_threshold}倍中位数")
+                    logger.info("- 阈值类型: 动态（相对中位数）")
+                else:
+                    logger.info(f"- 宽度阈值: >{bbands_width_threshold}%")
+                    logger.info("- 阈值类型: 固定百分比")
+                logger.info(
+                    f"- 过滤模式: {'买卖双向过滤' if bbands_filter_mode == FilterMode.BOTH else '仅买入过滤' if bbands_filter_mode == FilterMode.BUY_ONLY else '不过滤'}"
+                )
+                logger.info("- 过滤条件: 布林带宽度必须大于阈值")
+
+            if (
+                trend_filter_period == 0
+                and signal_delay == 0
+                and adx_period == 0
+                and bbands_period == 0
+            ):
+                logger.info("- 未启用任何过滤器")
+
+            # 打印策略表现
+            logger.info("\n策略表现:")
+            logger.info(f"- 夏普比率: {sharpe['sharperatio']:.4f}")
+            logger.info(f"- 年化收益率: {analysis['rnorm100']:.2f}%")
+            logger.info(f"- 最大回撤: {drawdown['max']['drawdown']:.2f}%")
+            logger.info(f"- 初始资金: {initial_cash:.2f}")
+            logger.info(f"- 最终资金: {cerebro.broker.getvalue():.2f}")
+            logger.info(
+                f"- 总收益率: {(cerebro.broker.getvalue() / initial_cash - 1) * 100:.2f}%"
+            )
+
+            # 如果有持仓数据，也打印出来
+            if strat.last_holding_data:
+                logger.info("\n当前持仓:")
+                logger.info(f"- 买入时间: {strat.last_holding_data['买入时间']}")
+                logger.info(f"- 买入价格: {strat.last_holding_data['买入价格']:.3f}")
+                logger.info(f"- 当前收益: {strat.last_holding_data['当前收益']:.2%}")
+                logger.info(f"- 最高价格: {strat.last_holding_data['最高价格']:.3f}")
+                logger.info(f"- 当前价格: {strat.last_holding_data['当前价格']:.3f}")
 
     return {
         "短期均线": strat.params.short_period,
@@ -818,6 +1174,10 @@ def optimize_parameters(
     bbands_period=0,  # 添加布林带参数
     bbands_width_threshold=0.0,  # 添加布林带宽度阈值参数
     bbands_width_dynamic=False,  # 新增参数
+    adx_filter_mode=FilterMode.BOTH,  # 新增过滤器模式参数
+    bbands_filter_mode=FilterMode.BOTH,  # 新增过滤器模式参数
+    trend_filter_mode=FilterMode.BOTH,  # 新增过滤器模式参数
+    signal_delay_mode=FilterMode.BOTH,  # 新增过滤器模式参数
 ):
     results = []
 
@@ -855,8 +1215,8 @@ def optimize_parameters(
             atr_multiplier,
             use_atr_stop,
             cash_ratio,
-            enable_crossover_sell,
-            debug,
+            not args.disable_crossover_sell,
+            args.debug,
             notifiers=notifiers,
             trend_filter_period=trend_filter_period,  # 传递趋势过滤器参数
             signal_delay=signal_delay,  # 传递信号滞后参数
@@ -865,6 +1225,10 @@ def optimize_parameters(
             bbands_period=bbands_period,  # 传递布林带参数
             bbands_width_threshold=bbands_width_threshold,  # 传递布林带宽度阈值参数
             bbands_width_dynamic=bbands_width_dynamic,  # 新增参数
+            adx_filter_mode=adx_filter_mode,
+            bbands_filter_mode=bbands_filter_mode,
+            trend_filter_mode=trend_filter_mode,
+            signal_delay_mode=signal_delay_mode,
         )
         if result:
             results.append(result)
@@ -1009,6 +1373,36 @@ if __name__ == "__main__":
         help="布林带宽度阈值。可以是绝对值（如2.5表示2.5%）或中位数倍数（如1.2x表示1.2倍中位数）。0表示不使用。",
     )
 
+    parser.add_argument(
+        "--adx-filter-mode",
+        type=str,
+        choices=["both", "buy_only", "none"],
+        default="both",
+        help="ADX过滤器模式：both(买卖都过滤)，buy_only(只过滤买入)，none(不过滤)",
+    )
+    parser.add_argument(
+        "--bbands-filter-mode",
+        type=str,
+        choices=["both", "buy_only", "none"],
+        default="both",
+        help="布林带过滤器模式：both(买卖都过滤)，buy_only(只过滤买入)，none(不过滤)",
+    )
+
+    parser.add_argument(
+        "--trend-filter-mode",
+        type=str,
+        choices=["both", "buy_only", "none"],
+        default="both",
+        help="趋势过滤器模式：both(买卖都过滤)，buy_only(只过滤买入)，none(不过滤)",
+    )
+    parser.add_argument(
+        "--signal-delay-mode",
+        type=str,
+        choices=["both", "buy_only", "none"],
+        default="both",
+        help="信号滞后模式：both(买卖都滞后)，buy_only(只买入滞后)，none(不滞后)",
+    )
+
     args = parser.parse_args()
 
     # 移除可能的市场后缀
@@ -1075,6 +1469,14 @@ if __name__ == "__main__":
             logger.error("布林带宽度阈值必须是数字")
             sys.exit(1)
 
+    # 转换过滤器模式参数
+    adx_filter_mode = FilterMode(args.adx_filter_mode)
+    bbands_filter_mode = FilterMode(args.bbands_filter_mode)
+
+    # 转换过滤器模式参数
+    trend_filter_mode = FilterMode(args.trend_filter_mode)
+    signal_delay_mode = FilterMode(args.signal_delay_mode)
+
     # 运行回测
     results = optimize_parameters(
         symbol,
@@ -1098,6 +1500,10 @@ if __name__ == "__main__":
         bbands_period=args.bbands_period,
         bbands_width_threshold=bbands_width_threshold,
         bbands_width_dynamic=bbands_width_dynamic,  # 新增参数
+        adx_filter_mode=adx_filter_mode,
+        bbands_filter_mode=bbands_filter_mode,
+        trend_filter_mode=trend_filter_mode,
+        signal_delay_mode=signal_delay_mode,
     )
 
     # 将排序逻辑修改为按年化收益率降序排列
