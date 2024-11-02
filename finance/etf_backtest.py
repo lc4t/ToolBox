@@ -44,6 +44,12 @@ class ETFStrategy(bt.Strategy):
         ("notifiers", {}),  # 通知器字典
         ("signal_date", None),  # 信号日期
         ("notify_date", None),  # 修改参数名
+        ("adx_period", 0),  # ADX周期，0表示不使用
+        ("adx_threshold", 0),  # ADX阈值，0表示不使用
+        ("bbands_period", 0),  # 布林带周期，0表示不使用
+        ("bbands_width_threshold", 0.0),  # 布林带宽度阈值，0表示不使用
+        ("trend_filter_period", 0),  # 趋势过滤器周期，0表示不使用
+        ("signal_delay", 0),  # 信号滞后天数，0表示不滞后
     )
 
     def __init__(self):
@@ -81,6 +87,32 @@ class ETFStrategy(bt.Strategy):
         self.analyzers.returns = bt.analyzers.Returns()
         self.analyzers.sharpe = bt.analyzers.SharpeRatio()
         self.analyzers.drawdown = bt.analyzers.DrawDown()
+
+        # 添加趋势过滤器指标
+        if self.params.trend_filter_period > 0:
+            self.trend_sma = bt.indicators.ExponentialMovingAverage(
+                self.datas[0], period=self.params.trend_filter_period
+            )
+
+        # 用于信号滞后的变量
+        self.pending_buy_signal = 0  # 用于记录买入信号等待天数
+        self.pending_sell_signal = 0  # 用于记录卖出信号等待天数
+
+        # 添加ADX指标
+        if self.params.adx_period > 0:
+            self.adx = bt.indicators.AverageDirectionalMovementIndex(
+                self.datas[0], period=self.params.adx_period
+            )
+
+        # 添加布林带指标
+        if self.params.bbands_period > 0:
+            self.bbands = bt.indicators.BollingerBands(
+                self.datas[0], period=self.params.bbands_period
+            )
+            # 计算布林带宽度百分比
+            self.bbands_width = (
+                100 * (self.bbands.top - self.bbands.bot) / self.bbands.mid
+            )
 
     def next(self):
         # 获取当前日期和下一个交易日
@@ -167,9 +199,48 @@ class ETFStrategy(bt.Strategy):
         if self.order:
             return
 
-        # 执行交易逻辑，不受通知日期限制
+        # 检查趋势过滤器条件
+        trend_ok = True
+        trend_filter_msg = []
+
+        # ADX过滤器
+        if self.params.adx_period > 0 and self.params.adx_threshold > 0:
+            adx_ok = self.adx[0] > self.params.adx_threshold
+            trend_ok = trend_ok and adx_ok
+            trend_filter_msg.append(
+                f"ADX({self.params.adx_period}): {self.adx[0]:.2f} "
+                f"{'>' if adx_ok else '<='} {self.params.adx_threshold}"
+            )
+
+        # 布林带宽度过滤器
+        if self.params.bbands_period > 0 and self.params.bbands_width_threshold > 0:
+            bbands_ok = self.bbands_width[0] > self.params.bbands_width_threshold
+            trend_ok = trend_ok and bbands_ok
+            trend_filter_msg.append(
+                f"布林带宽度({self.params.bbands_period}): {self.bbands_width[0]:.2f}% "
+                f"{'>' if bbands_ok else '<='} {self.params.bbands_width_threshold}%"
+            )
+
         if not self.position:  # 没有持仓
             if self.crossover > 0:  # 买入信号
+                if not trend_ok:
+                    logger.debug(
+                        f"趋势过滤器阻止买入 - 日期: {current_date}\n"
+                        f"过滤条件: {', '.join(trend_filter_msg)}"
+                    )
+                    return
+
+                # 处理信号滞后
+                if self.params.signal_delay > 0:
+                    self.pending_buy_signal += 1
+                    if self.pending_buy_signal < self.params.signal_delay:
+                        logger.debug(
+                            f"买入信号等待中 - 日期: {current_date}, "
+                            f"已等待: {self.pending_buy_signal}天"
+                        )
+                        return
+                    logger.debug(f"买入信号确认 - 日期: {current_date}")
+
                 # 先计算买入数量
                 available_cash = self.broker.getcash() * self.params.cash_ratio
                 size = int(available_cash / self.dataclose[0])
@@ -210,10 +281,17 @@ class ETFStrategy(bt.Strategy):
                         f"notifiers: {list(self.params.notifiers.keys()) if self.params.notifiers else '无'}"
                     )
 
+                # 重置信号等待计数
+                self.pending_buy_signal = 0
+
         else:  # 有持仓
             # 更新最高价格
             if self.dataclose[0] > self.highest_price:
                 self.highest_price = self.dataclose[0]
+
+            # 检查是否触发止损或均线下穿卖出
+            sell_signal = False
+            sell_reason = ""
 
             # 计算止损价格
             if self.params.use_atr_stop:
@@ -225,50 +303,48 @@ class ETFStrategy(bt.Strategy):
             else:
                 stop_price = self.highest_price * (1 - self.params.stop_loss)
 
-            # 检查是否触发止损
+            # 检查是否触发止损（止损优先级最高，不受趋势过滤器影响）
             if self.dataclose[0] <= stop_price:
-                signal_data.update(
-                    {
-                        "signal_type": "卖出",
-                        "signal_details": (
-                            f"止损卖出指标:\n"
-                            f"当前价格: {self.dataclose[0]:.3f}\n"
-                            f"最高价格: {self.highest_price:.3f}\n"
-                            f"ATR止损价: {self.highest_price - (self.atr[0] * self.params.atr_multiplier):.3f}\n"
-                            f"比例止损价: {self.highest_price * (1 - self.params.stop_loss):.3f}\n"
-                            f"最终止损价: {stop_price:.3f}\n"
-                            f"价格跌幅: {((self.dataclose[0] - self.highest_price) / self.highest_price * 100):.2f}%\n"
-                            f"ATR指标: {self.atr[0]:.3f}"
-                        ),
-                        "position_details": "即将清空持仓",
-                        "signal_description": "触发止损条件，建议卖出",
-                    }
-                )
-                order = self.sell(size=self.position.size)
-                order.sell_reason = "触发止损"  # 设置卖出原因
-                self.order = order
-
-            # 检查是否触发均线下穿卖出
+                sell_signal = True
+                sell_reason = "触发止损"
+            # 检查是否触发均线下穿卖出（受趋势过滤器影响）
             elif self.params.enable_crossover_sell and self.crossover < 0:
-                signal_data.update(
-                    {
-                        "signal_type": "卖出",
-                        "signal_details": (
-                            f"均线下穿卖出指标:\n"
-                            f"短期均线: MA{self.params.short_period} = {self.sma_short[0]:.3f}\n"
-                            f"长期均线: MA{self.params.long_period} = {self.sma_long[0]:.3f}\n"
-                            f"均线差值: {(self.sma_short[0] - self.sma_long[0]):.3f}\n"
-                            f"ATR指标: {self.atr[0]:.3f}\n"
-                            f"当前价格: {self.dataclose[0]:.3f}\n"
-                            f"持仓收益: {((self.dataclose[0] - self.buyprice) / self.buyprice * 100):.2f}%"
-                        ),
-                        "position_details": "即将清空持仓",
-                        "signal_description": "短期均线下穿长期均线，建议卖出",
-                    }
+                if trend_ok:  # 趋势过滤器允许卖出
+                    sell_signal = True
+                    sell_reason = "均线下穿"
+                else:
+                    logger.debug(
+                        f"趋势过滤器阻止均线下穿卖出 - 日期: {current_date}\n"
+                        f"过滤条件: {', '.join(trend_filter_msg)}"
+                    )
+
+            # 处理卖出信号
+            if sell_signal:
+                # 处理信号滞后
+                if self.params.signal_delay > 0:
+                    self.pending_sell_signal += 1
+                    if self.pending_sell_signal < self.params.signal_delay:
+                        logger.debug(
+                            f"卖出信号等待中 - 日期: {current_date}, "
+                            f"已等待: {self.pending_sell_signal}天"
+                        )
+                        return
+                    logger.debug(f"卖出信号确认 - 日期: {current_date}")
+
+                # 执行卖出操作
+                self.order = self.sell(size=self.position.size)
+                # 设置卖出原因，供 notify_order 使用
+                self.order.sell_reason = sell_reason
+
+                logger.info(
+                    f"卖出信号 - 日期: {current_date}, "
+                    f"价格: {self.dataclose[0]:.2f}, "
+                    f"数量: {self.position.size}, "
+                    f"原因: {sell_reason}"
                 )
-                order = self.sell(size=self.position.size)
-                order.sell_reason = "均线下穿"  # 设置卖出原因
-                self.order = order
+
+                # 重置信号等待计数
+                self.pending_sell_signal = 0
 
     def notify_order(self, order):
         if self.params.debug:
@@ -292,7 +368,9 @@ class ETFStrategy(bt.Strategy):
                         "数量": order.executed.size,
                         "消耗资金": order.executed.value,
                         "手续费": order.executed.comm,
+                        "收益": 0.0,  # 买入时收益为0
                         "剩余资金": self.broker.getcash(),
+                        "指标条件": f"MA{self.params.short_period}({self.sma_short[0]:.3f}) > MA{self.params.long_period}({self.sma_long[0]:.3f})",
                     }
                 )
 
@@ -304,20 +382,15 @@ class ETFStrategy(bt.Strategy):
                     f"Commission: {order.executed.comm:.2f}"
                 )
             else:  # 卖出时
-                # 清除缓存的买入前表现
-                # self.pre_position_performance = {...} 删除这行
-
+                # 计算卖出收益（需要考虑买入和卖出的总手续费）
                 sell_value = order.executed.price * order.executed.size
-                commission = order.executed.comm
+                buy_value = self.buyprice * order.executed.size
+                total_commission = (
+                    order.executed.comm + self.buycomm
+                )  # 买入和卖出的总手续费
                 profit = round(
-                    -(
-                        sell_value
-                        - self.buyprice * order.executed.size
-                        - commission
-                        - self.buycomm
-                    ),
-                    4,
-                )
+                    buy_value - sell_value - total_commission, 4
+                )  # 收益 = 卖出价值 - 买入价值 - 总手续费
 
                 # 获取实际的止损价格和指标条件
                 if getattr(order, "sell_reason", "") == "触发止损":
@@ -343,15 +416,15 @@ class ETFStrategy(bt.Strategy):
                 else:
                     indicator_condition = "未知条件"
 
-                # 记录卖出交易，修改这里使用统一的键名
+                # 记录卖出交易（只记录卖出时的手续费）
                 self.trades.append(
                     {
                         "类型": "卖出",
                         "日期": self.data.datetime.date(0),
                         "价格": order.executed.price,
                         "数量": -order.executed.size,
-                        "消耗资金": sell_value,  # 修改这里，统一使用 '消耗资金'
-                        "手续费": commission,
+                        "消耗资金": sell_value,
+                        "手续费": order.executed.comm,  # 只记录卖出时的手续费
                         "收益": profit,
                         "剩余资金": self.broker.getcash(),
                         "指标条件": indicator_condition,
@@ -359,20 +432,25 @@ class ETFStrategy(bt.Strategy):
                 )
 
                 logger.info(
-                    f"Sell executed - Date: {self.data.datetime.date(0)}, "
-                    f"Price: {order.executed.price:.2f}, "
-                    f"Size: {order.executed.size}, "
-                    f"Profit: {profit:.2f}, "
-                    f"Reason: {getattr(order, 'sell_reason', '未知原因')}"  # 添加卖出原因到日志
+                    f"卖出执行完成 - 日期: {self.data.datetime.date(0)}, "
+                    f"价格: {order.executed.price:.2f}, "
+                    f"数量: {order.executed.size}, "
+                    f"收益: {profit:.2f}, "  # 修改这里：取负号
+                    f"原因: {getattr(order, 'sell_reason', '未知原因')}"
                 )
-                self.highest_price = 0  # 重置最高价格
-                self.buy_date = None  # 重置买入日期
+
+                # 重置相关变量
+                self.highest_price = 0
+                self.buy_date = None
+                self.buyprice = None
+                self.buycomm = None
+
         elif order.status in [order.Canceled, order.Margin, order.Rejected]:
             logger.warning(
-                f"Order {order.ref} {order.Status[order.status]} on {self.data.datetime.date(0)}, "
-                f"Price: {self.dataclose[0]:.2f}, Cash: {self.broker.getcash():.2f}, "
-                f"Reason: {order.info.get('reject_reason', 'Unknown')}, "
-                f"Size: {order.created.size}, Price: {order.created.price:.2f}"
+                f"订单 {order.ref} {order.Status[order.status]} - 日期: {self.data.datetime.date(0)}, "
+                f"价格: {self.dataclose[0]:.2f}, 可用资金: {self.broker.getcash():.2f}, "
+                f"原因: {order.info.get('reject_reason', 'Unknown')}, "
+                f"数量: {order.created.size}, 价格: {order.created.price:.2f}"
             )
 
         self.order = None
@@ -384,6 +462,7 @@ class ETFStrategy(bt.Strategy):
 
     # 添加一个新方法来生成交易记录表格
     def get_trade_table(self):
+        """生成交易记录表格"""
         if not self.trades:
             return "没有发生交易"
 
@@ -392,40 +471,47 @@ class ETFStrategy(bt.Strategy):
             "日期",
             "价格",
             "数量",
-            "消耗/获得资金",
+            "消耗资金",
             "手续费",
             "收益",
             "剩余资金",
+            "资产总值",  # 新增列
             "指标条件",
         ]
         table_data = []
         for trade in self.trades:
             if trade["类型"] == "买入":
+                # 计算资产总值 = 剩余资金 + 持仓市值
+                total_value = trade["剩余资金"] + trade["数量"] * trade["价格"]
                 table_data.append(
                     [
                         trade["类型"],
                         str(trade["日期"]),
                         f"{trade['价格']:.3f}",
                         f"{trade['数量']:.0f}",
-                        f"{trade['消耗资金']:.4f}",
-                        f"{trade['手续费']:.4f}",
+                        f"{trade['消耗资金']:.2f}",
+                        f"{trade['手续费']:.2f}",
                         "-",
-                        f"{trade['剩余资金']:.4f}",
-                        f"MA{self.params.short_period}({self.sma_short[0]:.3f}) > MA{self.params.long_period}({self.sma_long[0]:.3f})",
+                        f"{trade['剩余资金']:.2f}",
+                        f"{total_value:.2f}",  # 新增资产总值
+                        trade["指标条件"],  # 买入时的指标条件
                     ]
                 )
             else:  # 卖出
+                # 卖出时资产总值就是剩余资金
+                total_value = trade["剩余资金"]
                 table_data.append(
                     [
                         trade["类型"],
                         str(trade["日期"]),
                         f"{trade['价格']:.3f}",
                         f"{trade['数量']:.0f}",
-                        f"{trade['消耗资金']:.4f}",  # 修改这里，统一使用 '消耗资金'
-                        f"{trade['手续费']:.4f}",
-                        f"{trade['收益']:.4f}",
-                        f"{trade['剩余资金']:.4f}",
-                        trade["指标条件"],
+                        f"{trade['消耗资金']:.2f}",
+                        f"{trade['手续费']:.2f}",
+                        f"{trade['收益']:.2f}",
+                        f"{trade['剩余资金']:.2f}",
+                        f"{total_value:.2f}",  # 新增资产总值
+                        trade["指标条件"],  # 卖出时的指标条件
                     ]
                 )
 
@@ -438,10 +524,11 @@ class ETFStrategy(bt.Strategy):
                 "left",  # 日期
                 "right",  # 价格
                 "right",  # 数量
-                "right",  # 消耗/获得资金
+                "right",  # 消耗资金
                 "right",  # 手续费
                 "right",  # 收益
                 "right",  # 剩余资金
+                "right",  # 资产总值
                 "left",  # 指标条件
             ),
         )
@@ -564,6 +651,12 @@ def run_backtest(
     enable_crossover_sell,
     debug,
     notifiers=None,
+    trend_filter_period=0,  # 添加趋势过滤器参数
+    signal_delay=0,  # 添加信号滞后参数
+    adx_period=0,  # 添加ADX参数
+    adx_threshold=0,  # 添加ADX阈值参数
+    bbands_period=0,  # 添加布林带参数
+    bbands_width_threshold=0.0,  # 添加布林带宽度阈值参数
 ):
     cerebro = bt.Cerebro()
 
@@ -606,6 +699,12 @@ def run_backtest(
         enable_crossover_sell=enable_crossover_sell,
         debug=debug,
         notifiers=notifiers or {},
+        adx_period=adx_period,
+        adx_threshold=adx_threshold,
+        bbands_period=bbands_period,
+        bbands_width_threshold=bbands_width_threshold,
+        trend_filter_period=trend_filter_period,  # 传递趋势过滤器参数
+        signal_delay=signal_delay,  # 传递信号滞后参数
     )
 
     cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name="sharpe")
@@ -628,6 +727,12 @@ def run_backtest(
         for key, value in drawdown.items()
     }
 
+    # 生成交易记录表格
+    trade_table = strat.get_trade_table()
+    if trade_table != "没有发生交易":
+        logger.info("\n交易记录:")
+        logger.info(f"\n{trade_table}")
+
     # 如果有通知器，发送最后一天的信号数据和性能数据
     if notifiers and hasattr(strat, "last_signal_data"):
         # 添加性能数据到信号详情
@@ -637,9 +742,6 @@ def run_backtest(
         performance_text += f"- 最大回撤: {drawdown['max']['drawdown']:.2f}%"
 
         strat.last_signal_data["signal_details"] += performance_text
-
-        # 生成交易记录表格
-        trade_table = strat.get_trade_table()
         strat.last_signal_data["trade_table"] = trade_table
 
         # 发送通知
@@ -688,6 +790,12 @@ def optimize_parameters(
     enable_crossover_sell,
     debug,
     notifiers=None,
+    trend_filter_period=0,  # 添加趋势过滤器参数
+    signal_delay=0,  # 添加信号滞后参数
+    adx_period=0,  # 添加ADX参数
+    adx_threshold=0,  # 添加ADX阈值参数
+    bbands_period=0,  # 添加布林带参数
+    bbands_width_threshold=0.0,  # 添加布林带宽度阈值参数
 ):
     results = []
 
@@ -728,6 +836,12 @@ def optimize_parameters(
             enable_crossover_sell,
             debug,
             notifiers=notifiers,
+            trend_filter_period=trend_filter_period,  # 传递趋势过滤器参数
+            signal_delay=signal_delay,  # 传递信号滞后参数
+            adx_period=adx_period,  # 传递ADX参数
+            adx_threshold=adx_threshold,  # 传递ADX阈值参数
+            bbands_period=bbands_period,  # 传递布林带参数
+            bbands_width_threshold=bbands_width_threshold,  # 传递布林带宽度阈值参数
         )
         if result:
             results.append(result)
@@ -834,6 +948,44 @@ if __name__ == "__main__":
         help="Bark推送URL指定此参数将启用Bark通知。",
     )
 
+    parser.add_argument(
+        "--trend-filter-period",
+        type=int,
+        default=0,
+        help="趋势过滤器周期，0表示不使用。使用时，只在价格高于该周期均线时允许买入",
+    )
+    parser.add_argument(
+        "--signal-delay",
+        type=int,
+        default=0,
+        help="信号滞后天数，0表示不滞后。使用时，需要连续N天保持信号才执行交易",
+    )
+
+    parser.add_argument(
+        "--adx-period",
+        type=int,
+        default=0,
+        help="ADX指标周期，0表示不使用。使用时，只在ADX大于阈值时允许交易",
+    )
+    parser.add_argument(
+        "--adx-threshold",
+        type=float,
+        default=0,
+        help="ADX指标阈值，0表示不使用。使用时，只在ADX大于此值时允许交易",
+    )
+    parser.add_argument(
+        "--bbands-period",
+        type=int,
+        default=0,
+        help="布林带周期，0表示不使用。使用时，只在布林带宽度大于阈值时允许交易",
+    )
+    parser.add_argument(
+        "--bbands-width-threshold",
+        type=float,
+        default=0.0,
+        help="布林带宽度阈值（百分比），0表示不使用。使用时，只在布林带宽度大于此值时允许交易",
+    )
+
     args = parser.parse_args()
 
     # 移除可能的市场后缀
@@ -899,6 +1051,12 @@ if __name__ == "__main__":
         not args.disable_crossover_sell,
         args.debug,
         notifiers=notifiers,
+        trend_filter_period=args.trend_filter_period,  # 添加趋势过滤器参数
+        signal_delay=args.signal_delay,  # 添加信号滞后参数
+        adx_period=args.adx_period,
+        adx_threshold=args.adx_threshold,
+        bbands_period=args.bbands_period,
+        bbands_width_threshold=args.bbands_width_threshold,
     )
 
     # 将排序逻辑修改为按年化收益率降序排列
