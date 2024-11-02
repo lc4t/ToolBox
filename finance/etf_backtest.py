@@ -872,49 +872,49 @@ if __name__ == "__main__":
         help="ETF代码，如159915（无需添加.SZ/.SS后缀，程序会自动处理）",
     )
     parser.add_argument(
-        "--start_date", type=str, default="2018-01-01", help="回测开始日期 (YYYY-MM-DD)"
+        "--start-date", type=str, default="2018-01-01", help="回测开始日期 (YYYY-MM-DD)"
     )
     parser.add_argument(
-        "--end_date",
+        "--end-date",
         type=str,
         default=datetime.now().strftime("%Y-%m-%d"),
         help="回测结束日期 (YYYY-MM-DD)",
     )
     parser.add_argument(
-        "--initial_cash", type=float, default=10000.0, help="初资金，默认10000元"
+        "--initial-cash", type=float, default=10000.0, help="初资金，默认10000元"
     )
     parser.add_argument(
-        "--short_period_range",
+        "--short-period-range",
         type=str,
         default="20",
         help="短期均线范围，用逗号分隔或短横线表示范围，如：10,20,30 或 10-30",
     )
     parser.add_argument(
-        "--long_period_range",
+        "--long-period-range",
         type=str,
         default="26",
         help="长期均线范围，逗号分隔或短横线表示范围",
     )
     parser.add_argument(
-        "--stop_loss_range",
+        "--stop-loss-range",
         type=str,
         default="0.10",
         help="止损比例范围，用逗号分隔或短横线表示范围",
     )
     parser.add_argument(
-        "--cash_ratio_range",
+        "--cash-ratio-range",
         type=str,
         default="0.95",
         help="使用资金比例范围，用逗号分隔",
     )
     parser.add_argument(
-        "--atr_period",
+        "--atr-period",
         type=int,
         help="ATR计算周期，默认使用长期均线周期",
         default=None,
     )
     parser.add_argument(
-        "--atr_multiplier_range",
+        "--atr-multiplier-range",
         type=str,
         default="2.5",
         help="ATR倍数范围，用逗号分隔或短横线表示范围",
@@ -964,8 +964,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--adx-period",
         type=int,
-        default=0,
-        help="ADX指标周期，0表示不使用。使用时，只在ADX大于阈值时允许交易",
+        default=14,
+        help="ADX指标周期，默认14。使用时，只在ADX大于阈值时允许交易",
     )
     parser.add_argument(
         "--adx-threshold",
@@ -976,8 +976,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--bbands-period",
         type=int,
-        default=0,
-        help="布林带周期，0表示不使用。使用时，只在布林带宽度大于阈值时允许交易",
+        default=20,
+        help="布林带周期，默认20。使用时，只在布林带宽度大于阈值时允许交易",
     )
     parser.add_argument(
         "--bbands-width-threshold",
