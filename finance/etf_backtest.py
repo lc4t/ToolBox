@@ -41,7 +41,6 @@ class ETFStrategy(bt.Strategy):
         ("enable_crossover_sell", True),  # 是否启用均线下穿卖出
         ("debug", False),  # debug模式开关
         ("symbol", None),  # ETF代码
-        ("name", None),  # ETF名称
         ("notifiers", {}),  # 通知器字典
         ("signal_date", None),  # 信号日期
         ("notify_date", None),  # 修改参数名
@@ -113,7 +112,9 @@ class ETFStrategy(bt.Strategy):
         # 准备基础信号数据
         signal_data = {
             "symbol": self.params.symbol,
-            "name": self.params.name,  # 添加ETF名称
+            "name": get_etf_name(
+                self.params.symbol
+            ),  # 直接调用 get_etf_name 获取中文名称
             "date": current_date,
             "price": self.dataclose[0],
             "sma_short": self.sma_short[0],
@@ -174,12 +175,24 @@ class ETFStrategy(bt.Strategy):
                 trade_table = self.get_trade_table()
                 signal_data["trade_table"] = trade_table  # 添加交易记录表格到信号数据中
 
-                message = build_message(signal_data, holding_data)
-                if self.params.debug:
-                    logger.debug(f"准备发送的消息内容: {message}")
-
+                # 根据通知器类型使用不同的消息格式
                 for notifier_name, notifier in self.params.notifiers.items():
                     try:
+                        # 根据通知器类型选择消息格式
+                        message_type = (
+                            "markdown"
+                            if isinstance(notifier, WecomBotNotifier)
+                            else "html"
+                        )
+                        message = build_message(
+                            signal_data, holding_data, message_type=message_type
+                        )
+
+                        if self.params.debug:
+                            logger.debug(
+                                f"准备发送的消息内容 - 通知器: {notifier_name}, 格式: {message_type}"
+                            )
+
                         response = notifier.send(message)
                         if self.params.debug:
                             logger.debug(
@@ -204,7 +217,9 @@ class ETFStrategy(bt.Strategy):
         # 准备基础信号数据
         signal_data = {
             "symbol": self.params.symbol,
-            "name": self.params.name,  # 添加ETF名称
+            "name": get_etf_name(
+                self.params.symbol
+            ),  # 直接调用 get_etf_name 获取中文名称
             "date": current_date,
             "price": self.dataclose[0],
             "sma_short": self.sma_short[0],
@@ -275,12 +290,29 @@ class ETFStrategy(bt.Strategy):
                             f"价格: {self.dataclose[0]:.2f}, "
                             f"数量: {size}"
                         )
-                        message = build_message(signal_data, holding_data)
+                        message = build_message(
+                            signal_data, holding_data, message_type="html"
+                        )
                         if self.params.debug:
                             logger.debug(f"准备发送的消息内容: {message}")
 
                         for notifier_name, notifier in self.params.notifiers.items():
                             try:
+                                # 根据通知器类型选择消息格式
+                                message_type = (
+                                    "markdown"
+                                    if isinstance(notifier, WecomBotNotifier)
+                                    else "html"
+                                )
+                                message = build_message(
+                                    signal_data, holding_data, message_type=message_type
+                                )
+
+                                if self.params.debug:
+                                    logger.debug(
+                                        f"准备发送的消息内容 - 通知器: {notifier_name}, 格式: {message_type}"
+                                    )
+
                                 response = notifier.send(message)
                                 if self.params.debug:
                                     logger.debug(
@@ -346,12 +378,29 @@ class ETFStrategy(bt.Strategy):
                         f"价格: {self.dataclose[0]:.2f}, "
                         f"止损价: {stop_price:.2f}"
                     )
-                    message = build_message(signal_data, holding_data)
+                    message = build_message(
+                        signal_data, holding_data, message_type="html"
+                    )
                     if self.params.debug:
                         logger.debug(f"准备发送的消息内容: {message}")
 
                     for notifier_name, notifier in self.params.notifiers.items():
                         try:
+                            # 根据通知器类型选择消息格式
+                            message_type = (
+                                "markdown"
+                                if isinstance(notifier, WecomBotNotifier)
+                                else "html"
+                            )
+                            message = build_message(
+                                signal_data, holding_data, message_type=message_type
+                            )
+
+                            if self.params.debug:
+                                logger.debug(
+                                    f"准备发送的消息内容 - 通知器: {notifier_name}, 格式: {message_type}"
+                                )
+
                             response = notifier.send(message)
                             if self.params.debug:
                                 logger.debug(
@@ -400,12 +449,29 @@ class ETFStrategy(bt.Strategy):
                         f"发送均线下穿卖出通知 - 日期: {current_date}, "
                         f"价格: {self.dataclose[0]:.2f}"
                     )
-                    message = build_message(signal_data, holding_data)
+                    message = build_message(
+                        signal_data, holding_data, message_type="html"
+                    )
                     if self.params.debug:
                         logger.debug(f"准备发送的消息内容: {message}")
 
                     for notifier_name, notifier in self.params.notifiers.items():
                         try:
+                            # 根据通知器类型选择消息格式
+                            message_type = (
+                                "markdown"
+                                if isinstance(notifier, WecomBotNotifier)
+                                else "html"
+                            )
+                            message = build_message(
+                                signal_data, holding_data, message_type=message_type
+                            )
+
+                            if self.params.debug:
+                                logger.debug(
+                                    f"准备发送的消息内容 - 通知器: {notifier_name}, 格式: {message_type}"
+                                )
+
                             response = notifier.send(message)
                             if self.params.debug:
                                 logger.debug(
@@ -743,7 +809,7 @@ def get_etf_data(symbol, start_date=None):
             logger.error(f"错误：{symbol} 的数据文件为空。")
             return None
 
-        # 将日期列转换为datetime索引，并移除时区信息
+        # 将日期列转换为datetime索引，并移除区信息
         df["日期"] = pd.to_datetime(df["日期"]).dt.normalize()
         df = df.set_index("日期")
 
@@ -779,7 +845,7 @@ def get_etf_data(symbol, start_date=None):
         return df[numeric_columns]  # 只返回数值列
 
     except Exception as e:
-        logger.error(f"处理 {symbol} 数据时出错: {e}")
+        logger.error(f"处理 {symbol} 数据出错: {e}")
         return None
 
 
@@ -807,9 +873,6 @@ def run_backtest(
     if data is None:
         return None
 
-    # 获取ETF名称
-    etf_name = getattr(data, "name", symbol)
-
     # 日期过滤，确保无时区
     start_date = pd.to_datetime(start_date).tz_localize(None)
     data = data[(data.index >= start_date)]
@@ -832,8 +895,7 @@ def run_backtest(
 
     cerebro.addstrategy(
         ETFStrategy,
-        symbol=symbol,
-        name=etf_name,  # 添加ETF名称
+        symbol=symbol,  # 只传入代码，名称由策略内部获取
         short_period=short_period,
         long_period=long_period,
         stop_loss=stop_loss,
@@ -1028,7 +1090,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--bark-url",
         type=str,
-        help="Bark推送URL。指定此参数将启用Bark通知。",
+        help="Bark推送URL指定此参数将启用Bark通知。",
     )
     parser.add_argument(
         "--notify-date",

@@ -1,11 +1,39 @@
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
+
+
+from finance.config import get_etf_name
+
+
+def build_title(signal_data: Dict[str, Any]) -> str:
+    """
+    构建统一的通知标题
+
+    Args:
+        signal_data: 信号数据字典，必须包含 date, signal_type, name, symbol 字段
+
+    Returns:
+        格式化的标题字符串
+
+    Raises:
+        ValueError: 当无法获取ETF中文名称时抛出异常
+    """
+    symbol = signal_data["symbol"]
+    name = get_etf_name(symbol)
+    if not name:
+        raise ValueError(f"无法获取ETF {symbol} 的中文名称")
+
+    return (
+        f"{name}({symbol}) - "
+        f"{signal_data['date']} - "
+        f"{signal_data['signal_type']}"
+    )
 
 
 def build_message(
-    signal_data: Dict,
-    holding_data: Optional[Dict] = None,
+    signal_data: Dict[str, Any],
+    holding_data: Optional[Dict[str, Any]] = None,
     message_type: str = "markdown",
-) -> Dict:
+) -> Dict[str, Any]:
     """
     构建通知消息内容
 
@@ -16,7 +44,19 @@ def build_message(
 
     Returns:
         包含消息内容的字典
+
+    Raises:
+        ValueError: 当无法获取ETF中文名称时抛出异常
     """
+    # 确保能获取到ETF中文名称
+    symbol = signal_data["symbol"]
+    name = get_etf_name(symbol)
+    if not name:
+        raise ValueError(f"无法获取ETF {symbol} 的中文名称")
+
+    # 更新signal_data中的name字段
+    signal_data["name"] = name
+
     # 准备持仓详情
     if holding_data:
         holding_details = (
@@ -24,7 +64,7 @@ def build_message(
             f"买入价格: {holding_data['买入价格']:.3f}\n"
             f"当前收益: {holding_data['当前收益']:.2%}\n"
             f"最高价格: {holding_data['最高价格']:.3f}\n"
-            f"止损价格: {holding_data['止损价格']:.3f}"
+            f"当前价格: {holding_data['当前价格']:.3f}"
         )
     else:
         holding_details = "当前无持仓"
@@ -54,7 +94,7 @@ def build_message(
 
     # 构建基础消息内容
     base_content = (
-        f"ETF交易信号 - {signal_data['symbol']}\n\n"
+        f"ETF交易信号 - {signal_data['name']} ({signal_data['symbol']})\n\n"
         f"日期: {signal_data['date']}\n"
         f"当前价格: {signal_data['price']:.3f}\n\n"
         f"信号类型: {signal_data['signal_type']}\n\n"
@@ -77,210 +117,215 @@ def build_message(
 
     base_content += "注意：此消息由自动交易系统生成，仅供参考。请结合市场情况自行判断。"
 
-    # 修改标题格式
-    title = (
-        f"ETF-{signal_data['date']}-"
-        f"{signal_data['signal_type']}-"
-        f"{signal_data.get('name', signal_data['symbol'])}"  # 如果有中文名称就用中文名称，否则用代码
-    )
+    # 使用统一的标题生成函数
+    title = build_title(signal_data)
     level = _get_signal_level(signal_data["signal_type"])
 
-    if message_type == "markdown":  # 企业微信使用 markdown
-        return {
-            "title": title,
-            "content": _to_markdown(base_content),
-            "level": level,
-        }
-    elif message_type == "html":  # 邮件使用 HTML
-        html_content = f"""
-        <html>
-        <head>
-            <style>
-                body {{
-                    font-family: Arial, sans-serif;
-                    line-height: 1.6;
-                    margin: 0;
-                    padding: 20px;
-                }}
-                h1 {{
-                    color: #333;
-                    border-bottom: 2px solid #eee;
-                    padding-bottom: 10px;
-                }}
-                h3 {{
-                    color: #666;
-                    margin-top: 20px;
-                }}
-                .buy {{
-                    color: #1e88e5;
-                    font-weight: bold;
-                }}
-                .sell {{
-                    color: #e53935;
-                    font-weight: bold;
-                }}
-                .hold {{
-                    color: #43a047;
-                    font-weight: bold;
-                }}
-                .signal-box {{
-                    background-color: #f5f5f5;
-                    padding: 15px;
-                    border-radius: 5px;
-                    margin: 10px 0;
-                }}
-                .trade-table {{
-                    border-collapse: collapse;
-                    width: 100%;
-                    margin: 15px 0;
-                    font-size: 14px;
-                }}
-                .trade-table th {{
-                    background-color: #f8f9fa;
-                    border: 1px solid #dee2e6;
-                    padding: 12px;
-                    text-align: left;
-                    font-weight: bold;
-                    color: #495057;
-                }}
-                .trade-table td {{
-                    border: 1px solid #dee2e6;
-                    padding: 12px;
-                    text-align: left;
-                }}
-                .trade-table tr:nth-child(even) {{
-                    background-color: #f8f9fa;
-                }}
-                .trade-table tr:hover {{
-                    background-color: #f2f2f2;
-                }}
-                .trade-table .number {{
-                    text-align: right;
-                    font-family: monospace;
-                }}
-                .notice {{
-                    background-color: #fff3e0;
-                    padding: 15px;
-                    border-left: 4px solid #ff9800;
-                    margin: 10px 0;
-                }}
-            </style>
-        </head>
-        <body>
-            {_to_html(base_content)}
-        </body>
-        </html>
-        """
+    # 根据消息类型返回不同格式的内容
+    if message_type == "html":  # 邮件使用 HTML
+        html_content = _to_html(
+            base_content, signal_data, holding_details, next_day_notice
+        )
         return {
             "title": title,
             "content": html_content,
             "level": level,
+            "msgtype": "html",
+        }
+    elif message_type == "markdown":  # 企业微信使用 markdown
+        markdown_content = _to_markdown(base_content)
+        return {
+            "title": title,
+            "content": markdown_content,
+            "level": level,
+            "msgtype": "markdown",
         }
     else:  # 纯文本
         return {
             "title": title,
             "content": base_content,
             "level": level,
+            "msgtype": "text",
         }
 
 
-def _to_html(text: str) -> str:
-    """将普通文本转换为HTML格式"""
-    # 基本格式转换
-    text = text.replace("\n", "<br>")
+def _to_html(
+    base_content: str,
+    signal_data: Dict[str, Any],
+    holding_details: str,
+    next_day_notice: str,
+) -> str:
+    """将基础内容转换为HTML格式"""
+    # 构建基本HTML内容
+    base_html = [
+        "<h1>ETF交易信号 - ",
+        f"{signal_data['name']} ({signal_data['symbol']})",
+        "</h1>",
+        '<div class="signal-box">',
+        "<p>日期: ",
+        str(signal_data["date"]),
+        "</p>",
+        "<p>当前价格: ",
+        f"{signal_data['price']:.3f}",
+        "</p>",
+        "<p>信号类型: <span class='",
+        signal_data["signal_type"].lower(),
+        "'>",
+        signal_data["signal_type"],
+        "</span></p>",
+        "</div>",
+        "<h2>信号详情</h2>",
+        '<div class="signal-box">',
+        signal_data["signal_details"].replace("\n", "<br>"),
+        "</div>",
+        "<h2>持仓状态</h2>",
+        '<div class="signal-box">',
+        signal_data["position_details"],
+        "<br>",
+        holding_details.replace("\n", "<br>"),
+        "</div>",
+        "<h2>策略参数</h2>",
+        '<table class="params-table">',
+        "<tr><th>参数</th><th>值</th></tr>",
+        "<tr><td>MA",
+        str(signal_data["short_period"]),
+        "</td><td>",
+        f"{signal_data['sma_short']:.3f}",
+        "</td></tr>",
+        "<tr><td>MA",
+        str(signal_data["long_period"]),
+        "</td><td>",
+        f"{signal_data['sma_long']:.3f}",
+        "</td></tr>",
+        "<tr><td>ATR(",
+        str(signal_data["atr_period"]),
+        ")</td><td>",
+        f"{signal_data['atr']:.3f}",
+        "</td></tr>",
+        "<tr><td>ATR倍数</td><td>",
+        str(signal_data["atr_multiplier"]),
+        "</td></tr>",
+        "<tr><td>止损比例</td><td>",
+        f"{signal_data['stop_loss']:.1%}",
+        "</td></tr>",
+        "</table>",
+        "<h2>说明</h2>",
+        '<div class="signal-box">',
+        signal_data["signal_description"],
+        "</div>",
+    ]
+    base_html = "".join(base_html)
 
-    # 添加标题样式
-    text = text.replace("ETF交易信号", "<h1>ETF交易信号</h1>")
-    text = text.replace("信号详情:", "<h3>信号详情</h3>")
-    text = text.replace("持仓状态:", "<h3>持仓状态</h3>")
-    text = text.replace("策略参数:", "<h3>策略参数</h3>")
-    text = text.replace("说明:", "<h3>说明</h3>")
-    text = text.replace("次日止损提示:", "<h3>次日止损提示</h3>")
-    text = text.replace("交易记录:", "<h3>交易记录</h3>")
+    # 添加次日止损提示（如果有）
+    stop_loss_html = ""
+    if next_day_notice:
+        stop_loss_html = "".join(
+            [
+                "<h2>次日止损提示</h2>",
+                '<div class="notice">',
+                next_day_notice.replace("\n", "<br>"),
+                "</div>",
+            ]
+        )
 
-    # 添加信号类型样式
-    text = text.replace("买入", '<span class="buy">买入</span>')
-    text = text.replace("卖出", '<span class="sell">卖出</span>')
-    text = text.replace("持有", '<span class="hold">持有</span>')
+    # 添加交易记录（如果有）
+    trade_html = ""
+    if "trade_table" in signal_data:
+        trade_html = "".join(
+            [
+                "<h2>交易记录</h2>",
+                _ascii_table_to_html(signal_data["trade_table"]),
+            ]
+        )
 
-    # 添加信号详情样式
-    text = text.replace("信号详情:", '<div class="signal-box">信号详情:')
-    text = text.replace("策略参数:", '</div><div class="signal-box">策略参数:')
-    text = text.replace("说明:", '</div><div class="signal-box">说明:')
-
-    # 美化交易记录表格
-    if "+---------+" in text:  # 检测是否存在表格边框
-        # 提取表格内容
-        table_start = text.find("+---------+")
-        table_end = text.find("\n\n", table_start)
-        if table_end == -1:  # 如果是最后一部分
-            table_end = len(text)
-        table_text = text[table_start:table_end]
-
-        # 将ASCII表格转换为HTML表格
-        rows = table_text.split("\n")
-        html_table = '<table class="trade-table">\n'
-
-        # 处理表头
-        header_row = rows[1]  # 第二行是表头
-        headers = [cell.strip() for cell in header_row.split("|")[1:-1]]
-        html_table += "<thead>\n<tr>\n"
-        for header in headers:
-            html_table += f"<th>{header}</th>\n"
-        html_table += "</tr>\n</thead>\n<tbody>\n"
-
-        # 处理数据行
-        for row in rows[3:-1]:  # 跳过表头和分隔线
-            if "+---------+" in row:  # 跳过分隔线
-                continue
-            cells = [cell.strip() for cell in row.split("|")[1:-1]]
-            html_table += "<tr>\n"
-            for i, cell in enumerate(cells):
-                # 根据列的类型添加不同的样式
-                if i == 0:  # 类型列
-                    if "买入" in cell:
-                        html_table += f'<td class="buy">{cell}</td>\n'
-                    elif "卖出" in cell:
-                        html_table += f'<td class="sell">{cell}</td>\n'
-                    else:
-                        html_table += f"<td>{cell}</td>\n"
-                elif i in [2, 4, 5, 6]:  # 数值列（价格、资金、手续费、收益）
-                    html_table += f'<td class="number">{cell}</td>\n'
-                else:
-                    html_table += f"<td>{cell}</td>\n"
-            html_table += "</tr>\n"
-
-        html_table += "</tbody>\n</table>"
-
-        # 替换原始表格
-        text = text[:table_start] + html_table + text[table_end:]
-
-    # 添加注意事项样式
-    text = text.replace(
-        "注意：此消息由自动交易系统生成",
-        '</div><div class="notice">注意：此消息由自动交易系统生成',
+    # 添加注意事项
+    notice_html = "".join(
+        [
+            '<div class="notice">',
+            "注意：此消息由自动交易系统生成，仅供参考。请结合市场情况自行判断。",
+            "</div>",
+        ]
     )
-    text += "</div>"
 
-    return text
+    # 组合所有HTML部分
+    style = """
+        <style>
+        body { font-family: Arial, sans-serif; line-height: 1.6; margin: 0; padding: 20px; color: #333; }
+        h1 { color: #1a73e8; border-bottom: 2px solid #eee; padding-bottom: 10px; margin-bottom: 20px; }
+        h2 { color: #666; margin-top: 25px; margin-bottom: 15px; }
+        .signal-box { background-color: #f8f9fa; padding: 15px; border-radius: 5px; margin: 10px 0; 
+                     border-left: 4px solid #1a73e8; }
+        .buy { color: #1e88e5; font-weight: bold; }
+        .sell { color: #e53935; font-weight: bold; }
+        .hold { color: #43a047; font-weight: bold; }
+        .params-table { border-collapse: collapse; width: 100%; margin: 15px 0; }
+        .params-table th, .params-table td { border: 1px solid #dee2e6; padding: 12px; 
+                                           text-align: left; }
+        .params-table th { background-color: #f8f9fa; font-weight: bold; }
+        .trade-table { border-collapse: collapse; width: 100%; margin: 15px 0; font-size: 14px; }
+        .trade-table th { background-color: #f8f9fa; border: 1px solid #dee2e6; padding: 12px; 
+                         text-align: left; font-weight: bold; }
+        .trade-table td { border: 1px solid #dee2e6; padding: 12px; }
+        .trade-table tr:nth-child(even) { background-color: #f8f9fa; }
+        .trade-table .number { text-align: right; font-family: monospace; }
+        .notice { background-color: #fff3e0; padding: 15px; border-radius: 5px; 
+                 border-left: 4px solid #ff9800; margin: 15px 0; }
+        .signal-type { font-size: 1.2em; font-weight: bold; padding: 5px 10px; border-radius: 3px; 
+                      background-color: #e8f0fe; display: inline-block; margin: 10px 0; }
+        </style>
+    """
+
+    return "".join(
+        [
+            "<html>",
+            "<head>",
+            style,
+            "</head>",
+            "<body>",
+            base_html,
+            stop_loss_html,
+            trade_html,
+            notice_html,
+            "</body>",
+            "</html>",
+        ]
+    )
 
 
-def _to_markdown(text: str) -> str:
-    """将普通文本转换为markdown格式"""
-    # 添加markdown格式化
-    text = text.replace("ETF交易信号", "# ETF交易信号")
-    text = text.replace("信号详情:", "### 信号详情")
-    text = text.replace("持仓状态:", "### 持仓状态")
-    text = text.replace("策略参数:", "### 策略参数")
-    text = text.replace("说明:", "### 说明")
-    text = text.replace("次日止损提示:", "### 次日止损提示")
+def _ascii_table_to_html(ascii_table: str) -> str:
+    """将ASCII表格转换为HTML表格"""
+    if not ascii_table or "没有发生交易" in ascii_table:
+        return "<p>没有发生交易</p>"
 
-    # 添加颜色和格式
-    text = text.replace("买入", '<font color="info">买入</font>')
-    text = text.replace("卖出", '<font color="warning">卖出</font>')
-    text = text.replace("持有", '<font color="comment">持有</font>')
+    rows = ascii_table.split("\n")
+    html_table = '<table class="trade-table">\n'
 
-    return text
+    # 处理表头
+    header_row = [cell.strip() for cell in rows[1].split("|")[1:-1]]
+    html_table += "<thead>\n<tr>\n"
+    for header in header_row:
+        html_table += f"<th>{header}</th>\n"
+    html_table += "</tr>\n</thead>\n<tbody>\n"
+
+    # 处理数据行
+    for row in rows[3:-1]:  # 跳过表头和分隔线
+        if "+-" in row:  # 跳过分线
+            continue
+        cells = [cell.strip() for cell in row.split("|")[1:-1]]
+        html_table += "<tr>\n"
+        for i, cell in enumerate(cells):
+            # 根据列的类型添加不同的样式
+            if i == 0:  # 类型列
+                class_name = cell.lower()
+                html_table += f'<td class="{class_name}">{cell}</td>\n'
+            elif i in [2, 4, 5, 6, 7]:  # 数值列
+                html_table += f'<td class="number">{cell}</td>\n'
+            else:
+                html_table += f"<td>{cell}</td>\n"
+        html_table += "</tr>\n"
+
+    html_table += "</tbody>\n</table>"
+    return html_table
 
 
 def _get_signal_level(signal_type: str) -> str:
@@ -290,3 +335,37 @@ def _get_signal_level(signal_type: str) -> str:
         "卖出": "timeSensitive",
         "持有": "passive",
     }.get(signal_type, "passive")
+
+
+def _to_markdown(text: str) -> str:
+    """将普通文本转换为markdown格式"""
+    lines = text.split("\n")
+    formatted_lines = []
+
+    # 特殊处理第一行（标题行）
+    if lines:
+        first_line = lines[0]
+        if "ETF交易信号" in first_line:
+            # 保持原始格式，确保中文名称和代码都显示
+            formatted_lines.append(f"# {first_line}")
+        else:
+            formatted_lines.append(first_line)
+
+    # 处理剩余行
+    for line in lines[1:]:
+        # 替换章节标题
+        line = line.replace("信号详情:", "### 信号详情")
+        line = line.replace("持仓状态:", "### 持仓状态")
+        line = line.replace("策略参数:", "### 策略参数")
+        line = line.replace("说明:", "### 说明")
+        line = line.replace("次日止损提示:", "### 次日止损提示")
+        line = line.replace("交易记录:", "### 交易记录")
+
+        # 添加信号类型的颜色标记
+        line = line.replace("买入", '<font color="info">买入</font>')
+        line = line.replace("卖出", '<font color="warning">卖出</font>')
+        line = line.replace("持有", '<font color="comment">持有</font>')
+
+        formatted_lines.append(line)
+
+    return "\n".join(formatted_lines)

@@ -3,12 +3,12 @@ from typing import Dict, List, Optional
 
 from dotenv import load_dotenv
 
+from finance.logger import logger
 from finance.notifiers.bark import BarkNotifier
 from finance.notifiers.base import BaseNotifier
 from finance.notifiers.mail import MailNotifier
 from finance.notifiers.wecom import WecomBotNotifier
 
-# 加载.env文件
 load_dotenv()
 
 # SMTP配置
@@ -34,7 +34,7 @@ def get_etf_name(code: str) -> str:
     """获取ETF的中文名称"""
     # 移除可能的市场后缀
     code = code.split(".")[0]
-    return ETF_NAMES.get(code, code)  # 如果找不到对应的名称，返回代码本身
+    return ETF_NAMES.get(code)  # 如果找不到对应的名称，返回代码本身
 
 
 def get_notifiers(
