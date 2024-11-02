@@ -48,6 +48,7 @@ class ETFStrategy(bt.Strategy):
         ("adx_threshold", 0),  # ADX阈值，0表示不使用
         ("bbands_period", 0),  # 布林带周期，0表示不使用
         ("bbands_width_threshold", 0.0),  # 布林带宽度阈值，0表示不使用
+        ("bbands_width_dynamic", False),  # 是否使用动态布林带宽度阈值（中位数倍数）
         ("trend_filter_period", 0),  # 趋势过滤器周期，0表示不使用
         ("signal_delay", 0),  # 信号滞后天数，0表示不滞后
     )
@@ -113,6 +114,11 @@ class ETFStrategy(bt.Strategy):
             self.bbands_width = (
                 100 * (self.bbands.top - self.bbands.bot) / self.bbands.mid
             )
+            # 添加布林带宽度的移动中位数
+            if self.params.bbands_width_dynamic:
+                self.bbands_width_median = bt.indicators.MovingAverageSimple(
+                    self.bbands_width, period=self.params.bbands_period
+                )
 
     def next(self):
         # 获取当前日期和下一个交易日
@@ -214,12 +220,25 @@ class ETFStrategy(bt.Strategy):
 
         # 布林带宽度过滤器
         if self.params.bbands_period > 0 and self.params.bbands_width_threshold > 0:
-            bbands_ok = self.bbands_width[0] > self.params.bbands_width_threshold
+            if self.params.bbands_width_dynamic:
+                # 使用中位数的倍数
+                threshold = (
+                    self.bbands_width_median[0] * self.params.bbands_width_threshold
+                )
+                bbands_ok = self.bbands_width[0] > threshold
+                trend_filter_msg.append(
+                    f"布林带宽度({self.params.bbands_period}): {self.bbands_width[0]:.2f}% "
+                    f"{'>' if bbands_ok else '<='} "
+                    f"{threshold:.2f}% ({self.params.bbands_width_threshold}倍中位数)"
+                )
+            else:
+                # 使用固定阈值
+                bbands_ok = self.bbands_width[0] > self.params.bbands_width_threshold
+                trend_filter_msg.append(
+                    f"布林带宽度({self.params.bbands_period}): {self.bbands_width[0]:.2f}% "
+                    f"{'>' if bbands_ok else '<='} {self.params.bbands_width_threshold}%"
+                )
             trend_ok = trend_ok and bbands_ok
-            trend_filter_msg.append(
-                f"布林带宽度({self.params.bbands_period}): {self.bbands_width[0]:.2f}% "
-                f"{'>' if bbands_ok else '<='} {self.params.bbands_width_threshold}%"
-            )
 
         if not self.position:  # 没有持仓
             if self.crossover > 0:  # 买入信号
@@ -657,6 +676,7 @@ def run_backtest(
     adx_threshold=0,  # 添加ADX阈值参数
     bbands_period=0,  # 添加布林带参数
     bbands_width_threshold=0.0,  # 添加布林带宽度阈值参数
+    bbands_width_dynamic=False,  # 新增参数
 ):
     cerebro = bt.Cerebro()
 
@@ -703,6 +723,7 @@ def run_backtest(
         adx_threshold=adx_threshold,
         bbands_period=bbands_period,
         bbands_width_threshold=bbands_width_threshold,
+        bbands_width_dynamic=bbands_width_dynamic,  # 新增参数
         trend_filter_period=trend_filter_period,  # 传递趋势过滤器参数
         signal_delay=signal_delay,  # 传递信号滞后参数
     )
@@ -796,6 +817,7 @@ def optimize_parameters(
     adx_threshold=0,  # 添加ADX阈值参数
     bbands_period=0,  # 添加布林带参数
     bbands_width_threshold=0.0,  # 添加布林带宽度阈值参数
+    bbands_width_dynamic=False,  # 新增参数
 ):
     results = []
 
@@ -842,6 +864,7 @@ def optimize_parameters(
             adx_threshold=adx_threshold,  # 传递ADX阈值参数
             bbands_period=bbands_period,  # 传递布林带参数
             bbands_width_threshold=bbands_width_threshold,  # 传递布林带宽度阈值参数
+            bbands_width_dynamic=bbands_width_dynamic,  # 新增参数
         )
         if result:
             results.append(result)
@@ -981,9 +1004,9 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--bbands-width-threshold",
-        type=float,
-        default=0.0,
-        help="布林带宽度阈值（百分比），0表示不使用。使用时，只在布林带宽度大于此值时允许交易",
+        type=str,
+        default="0.0",
+        help="布林带宽度阈值。可以是绝对值（如2.5表示2.5%）或中位数倍数（如1.2x表示1.2倍中位数）。0表示不使用。",
     )
 
     args = parser.parse_args()
@@ -1035,6 +1058,23 @@ if __name__ == "__main__":
         args.atr_period = long_period_range[0]  # 使用第一个长期均线值
         logger.debug(f"ATR周期未指定，使用长期均线周期: {args.atr_period}")
 
+    # 处理布林带宽度阈值
+    bbands_width_dynamic = False
+    bbands_width_threshold = 0.0
+    if args.bbands_width_threshold.endswith("x"):
+        bbands_width_dynamic = True
+        try:
+            bbands_width_threshold = float(args.bbands_width_threshold[:-1])
+        except ValueError:
+            logger.error("布林带宽度阈值格式错误，应为数字+x，如1.2x")
+            sys.exit(1)
+    else:
+        try:
+            bbands_width_threshold = float(args.bbands_width_threshold)
+        except ValueError:
+            logger.error("布林带宽度阈值必须是数字")
+            sys.exit(1)
+
     # 运行回测
     results = optimize_parameters(
         symbol,
@@ -1056,7 +1096,8 @@ if __name__ == "__main__":
         adx_period=args.adx_period,
         adx_threshold=args.adx_threshold,
         bbands_period=args.bbands_period,
-        bbands_width_threshold=args.bbands_width_threshold,
+        bbands_width_threshold=bbands_width_threshold,
+        bbands_width_dynamic=bbands_width_dynamic,  # 新增参数
     )
 
     # 将排序逻辑修改为按年化收益率降序排列
