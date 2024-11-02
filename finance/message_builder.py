@@ -1,7 +1,7 @@
 from typing import Any, Dict, Optional
 
-
 from finance.config import get_etf_name
+from finance.logger import logger
 
 
 def build_title(signal_data: Dict[str, Any]) -> str:
@@ -43,7 +43,7 @@ def build_message(
         message_type: 消息类型（markdown/html/text）
 
     Returns:
-        包含消息内容的字典
+        包含消息容的字典
 
     Raises:
         ValueError: 当无法获取ETF中文名称时抛出异常
@@ -58,58 +58,31 @@ def build_message(
     signal_data["name"] = name
 
     # 准备持仓详情
-    if holding_data:
-        holding_details = (
-            f"买入时间: {holding_data['买入时间']}\n"
-            f"买入价格: {holding_data['买入价格']:.3f}\n"
-            f"当前收益: {holding_data['当前收益']:.2%}\n"
-            f"最高价格: {holding_data['最高价格']:.3f}\n"
-            f"当前价格: {holding_data['当前价格']:.3f}"
-        )
+    if signal_data.get("position_details", "").startswith("当前持仓"):
+        holding_details = signal_data["position_details"]  # 直接使用完整的持仓信息
     else:
         holding_details = "当前无持仓"
 
-    # 为持有和买入信号添加次日止损提示
-    next_day_notice = ""
-    if signal_data["signal_type"] in ["持有", "买入"]:
-        current_price = signal_data["price"]
-        atr = signal_data["atr"]
-        atr_multiplier = signal_data["atr_multiplier"]
-        stop_loss_pct = signal_data["stop_loss"]
-
-        # 计算两种止损价格
-        atr_stop = current_price - (atr * atr_multiplier)
-        pct_stop = current_price * (1 - stop_loss_pct)
-        final_stop = max(atr_stop, pct_stop)
-
-        next_day_notice = (
-            f"\n次日止损提示:\n"
-            f"当前价格: {current_price:.3f}\n"
-            f"ATR止损价: {atr_stop:.3f} (当前价格 - {atr_multiplier}倍ATR)\n"
-            f"比例止损价: {pct_stop:.3f} (当前价格 × (1 - {stop_loss_pct:.1%}))\n"
-            f"最终止损价: {final_stop:.3f} (取两者较高者)\n\n"
-            f"注意：如果次日价格在不超过当前价格的情况下回落到 {final_stop:.3f}，"
-            f"将触发止损卖出。如果价格创新高，止损价格会相应提高。"
-        )
-
     # 构建基础消息内容
     base_content = (
-        f"ETF交易信号 - {signal_data['name']} ({signal_data['symbol']})\n\n"
+        f"ETF交易信号 - {signal_data['name']} ({signal_data['symbol']}) - {signal_data['signal_type']}\n\n"
         f"日期: {signal_data['date']}\n"
+        f"回测开始: {signal_data['start_date']}\n"
         f"当前价格: {signal_data['price']:.3f}\n\n"
         f"信号类型: {signal_data['signal_type']}\n\n"
-        f"信号详情:\n{signal_data['signal_details']}\n\n"
-        f"持仓状态:\n{signal_data['position_details']}\n"
-        f"{holding_details}\n\n"
+        f"信号详情:\n{signal_data['signal_details']}\n\n"  # 这里直接使用了signal_details
+        f"持仓状态:\n{holding_details}\n\n"
         f"策略参数:\n"
         f"- MA{signal_data['short_period']}: {signal_data['sma_short']:.3f}\n"
         f"- MA{signal_data['long_period']}: {signal_data['sma_long']:.3f}\n"
         f"- ATR({signal_data['atr_period']}): {signal_data['atr']:.3f}\n"
         f"- ATR倍数: {signal_data['atr_multiplier']}\n"
-        f"- 止损比例: {signal_data['stop_loss']:.1%}\n\n"
-        f"说明: {signal_data['signal_description']}\n\n"
-        f"{next_day_notice}\n\n"
+        f"- 止损比例: {signal_data['stop_loss']:.1%}\n"
     )
+
+    # 移除多余的说明
+    if signal_data["signal_description"] != "策略回测结果":
+        base_content += f"说明: {signal_data['signal_description']}\n\n"
 
     # 添加交易记录（如果有）
     if "trade_table" in signal_data:
@@ -123,9 +96,7 @@ def build_message(
 
     # 根据消息类型返回不同格式的内容
     if message_type == "html":  # 邮件使用 HTML
-        html_content = _to_html(
-            base_content, signal_data, holding_details, next_day_notice
-        )
+        html_content = _to_html(base_content)  # 只传入基础内容，让函数只负责格式转换
         return {
             "title": title,
             "content": html_content,
@@ -133,7 +104,9 @@ def build_message(
             "msgtype": "html",
         }
     elif message_type == "markdown":  # 企业微信使用 markdown
-        markdown_content = _to_markdown(base_content)
+        markdown_content = _to_markdown(
+            base_content
+        )  # 只传入基础内容，让函数只负责格式转换
         return {
             "title": title,
             "content": markdown_content,
@@ -149,132 +122,266 @@ def build_message(
         }
 
 
-def _to_html(
-    base_content: str,
-    signal_data: Dict[str, Any],
-    holding_details: str,
-    next_day_notice: str,
-) -> str:
-    """将基础内容转换为HTML格式"""
-    # 构建基本HTML内容
-    base_html = [
-        "<h1>ETF交易信号 - ",
-        f"{signal_data['name']} ({signal_data['symbol']})",
-        "</h1>",
-        '<div class="signal-box">',
-        "<p>日期: ",
-        str(signal_data["date"]),
-        "</p>",
-        "<p>当前价格: ",
-        f"{signal_data['price']:.3f}",
-        "</p>",
-        "<p>信号类型: <span class='",
-        signal_data["signal_type"].lower(),
-        "'>",
-        signal_data["signal_type"],
-        "</span></p>",
-        "</div>",
-        "<h2>信号详情</h2>",
-        '<div class="signal-box">',
-        signal_data["signal_details"].replace("\n", "<br>"),
-        "</div>",
-        "<h2>持仓状态</h2>",
-        '<div class="signal-box">',
-        signal_data["position_details"],
-        "<br>",
-        holding_details.replace("\n", "<br>"),
-        "</div>",
-        "<h2>策略参数</h2>",
-        '<table class="params-table">',
-        "<tr><th>参数</th><th>值</th></tr>",
-        "<tr><td>MA",
-        str(signal_data["short_period"]),
-        "</td><td>",
-        f"{signal_data['sma_short']:.3f}",
-        "</td></tr>",
-        "<tr><td>MA",
-        str(signal_data["long_period"]),
-        "</td><td>",
-        f"{signal_data['sma_long']:.3f}",
-        "</td></tr>",
-        "<tr><td>ATR(",
-        str(signal_data["atr_period"]),
-        ")</td><td>",
-        f"{signal_data['atr']:.3f}",
-        "</td></tr>",
-        "<tr><td>ATR倍数</td><td>",
-        str(signal_data["atr_multiplier"]),
-        "</td></tr>",
-        "<tr><td>止损比例</td><td>",
-        f"{signal_data['stop_loss']:.1%}",
-        "</td></tr>",
-        "</table>",
-        "<h2>说明</h2>",
-        '<div class="signal-box">',
-        signal_data["signal_description"],
-        "</div>",
-    ]
-    base_html = "".join(base_html)
-
-    # 添加次日止损提示（如果有）
-    stop_loss_html = ""
-    if next_day_notice:
-        stop_loss_html = "".join(
-            [
-                "<h2>次日止损提示</h2>",
-                '<div class="notice">',
-                next_day_notice.replace("\n", "<br>"),
-                "</div>",
-            ]
-        )
-
-    # 添加交易记录（如果有）
-    trade_html = ""
-    if "trade_table" in signal_data:
-        trade_html = "".join(
-            [
-                "<h2>交易记录</h2>",
-                _ascii_table_to_html(signal_data["trade_table"]),
-            ]
-        )
-
-    # 添加注意事项
-    notice_html = "".join(
-        [
-            '<div class="notice">',
-            "注意：此消息由自动交易系统生成，仅供参考。请结合市场情况自行判断。",
-            "</div>",
-        ]
-    )
-
-    # 组合所有HTML部分
+def _to_html(base_content: str) -> str:
+    """将基础内容转换为HTML格式，只负责格式转换"""
+    # 添加样式
     style = """
         <style>
-        body { font-family: Arial, sans-serif; line-height: 1.6; margin: 0; padding: 20px; color: #333; }
-        h1 { color: #1a73e8; border-bottom: 2px solid #eee; padding-bottom: 10px; margin-bottom: 20px; }
-        h2 { color: #666; margin-top: 25px; margin-bottom: 15px; }
-        .signal-box { background-color: #f8f9fa; padding: 15px; border-radius: 5px; margin: 10px 0; 
-                     border-left: 4px solid #1a73e8; }
-        .buy { color: #1e88e5; font-weight: bold; }
-        .sell { color: #e53935; font-weight: bold; }
-        .hold { color: #43a047; font-weight: bold; }
-        .params-table { border-collapse: collapse; width: 100%; margin: 15px 0; }
-        .params-table th, .params-table td { border: 1px solid #dee2e6; padding: 12px; 
-                                           text-align: left; }
-        .params-table th { background-color: #f8f9fa; font-weight: bold; }
-        .trade-table { border-collapse: collapse; width: 100%; margin: 15px 0; font-size: 14px; }
-        .trade-table th { background-color: #f8f9fa; border: 1px solid #dee2e6; padding: 12px; 
-                         text-align: left; font-weight: bold; }
-        .trade-table td { border: 1px solid #dee2e6; padding: 12px; }
-        .trade-table tr:nth-child(even) { background-color: #f8f9fa; }
-        .trade-table .number { text-align: right; font-family: monospace; }
-        .notice { background-color: #fff3e0; padding: 15px; border-radius: 5px; 
-                 border-left: 4px solid #ff9800; margin: 15px 0; }
-        .signal-type { font-size: 1.2em; font-weight: bold; padding: 5px 10px; border-radius: 3px; 
-                      background-color: #e8f0fe; display: inline-block; margin: 10px 0; }
+        body { 
+            font-family: Arial, sans-serif; 
+            line-height: 1.6; 
+            margin: 0; 
+            padding: 20px; 
+            color: #333; 
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background-color: #fff;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        h1 { 
+            color: #1a73e8; 
+            border-bottom: 2px solid #eee; 
+            padding-bottom: 10px; 
+            margin-bottom: 20px;
+            font-size: 24px;
+        }
+        h2 { 
+            color: #666; 
+            margin-top: 25px; 
+            margin-bottom: 15px;
+            font-size: 20px;
+            border-left: 4px solid #1a73e8;
+            padding-left: 10px;
+        }
+        .section {
+            background-color: #fff;
+            padding: 20px;
+            margin-bottom: 20px;
+            border-radius: 5px;
+            border: 1px solid #e0e0e0;
+        }
+        .signal-box { 
+            background-color: #f8f9fa; 
+            padding: 20px; 
+            border-radius: 5px; 
+            margin: 15px 0;
+            border-left: 4px solid #1a73e8;
+        }
+        .buy { 
+            color: #1e88e5; 
+            font-weight: bold;
+            background-color: #e3f2fd;
+            padding: 2px 6px;
+            border-radius: 3px;
+        }
+        .sell { 
+            color: #e53935; 
+            font-weight: bold;
+            background-color: #ffebee;
+            padding: 2px 6px;
+            border-radius: 3px;
+        }
+        .hold { 
+            color: #43a047; 
+            font-weight: bold;
+            background-color: #e8f5e9;
+            padding: 2px 6px;
+            border-radius: 3px;
+        }
+        .notice { 
+            background-color: #fff3e0; 
+            padding: 15px; 
+            border-radius: 5px;
+            border-left: 4px solid #ff9800; 
+            margin: 15px 0;
+        }
+        .params {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 10px;
+            margin: 15px 0;
+        }
+        .param-item {
+            background-color: #f8f9fa;
+            padding: 10px;
+            border-radius: 4px;
+            border: 1px solid #e0e0e0;
+        }
+        .trade-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 15px 0;
+            font-size: 14px;
+            background-color: #fff;
+        }
+        .trade-table th {
+            background-color: #1a73e8;
+            color: white;
+            padding: 12px;
+            text-align: left;
+            border: 1px solid #e0e0e0;
+        }
+        .trade-table td {
+            padding: 10px;
+            border: 1px solid #e0e0e0;
+            text-align: left;
+        }
+        .trade-table tr:nth-child(even) {
+            background-color: #f8f9fa;
+        }
+        .trade-table tr:hover {
+            background-color: #f5f5f5;
+        }
+        .trade-table .number {
+            text-align: right;
+        }
+        .performance {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+            margin: 15px 0;
+        }
+        .performance-item {
+            background-color: #f8f9fa;
+            padding: 15px;
+            border-radius: 5px;
+            text-align: center;
+            border: 1px solid #e0e0e0;
+        }
+        .performance-item .label {
+            color: #666;
+            font-size: 14px;
+            margin-bottom: 5px;
+        }
+        .performance-item .value {
+            font-size: 18px;
+            font-weight: bold;
+            color: #1a73e8;
+        }
         </style>
     """
 
+    # 将基础内容按章节分割
+    sections = base_content.split("\n\n")
+    formatted_sections = []
+
+    for section in sections:
+        if section.startswith("ETF交易信号"):
+            # 标题部分
+            formatted_sections.append(f"<h1>{section}</h1>")
+        elif "信号详情:" in section:
+            # 信号详情部分
+            title, content = section.split(":", 1)
+            content_html = content.replace("\n", "<br>")
+            formatted_sections.append(
+                f'<div class="section"><h2>{title}</h2>{content_html}</div>'
+            )
+        elif "持仓状态:" in section:
+            # 持仓状态部分
+            title, content = section.split(":", 1)
+            content_html = content.replace("\n", "<br>")
+            formatted_sections.append(
+                f'<div class="section"><h2>{title}</h2>{content_html}</div>'
+            )
+        elif "策略参数:" in section:
+            # 策略参数部分
+            title, content = section.split(":", 1)
+            params = content.strip().split("\n")
+            params_html = '<div class="params">'
+            for param in params:
+                if param.strip():
+                    params_html += f'<div class="param-item">{param}</div>'
+            params_html += "</div>"
+            formatted_sections.append(
+                f'<div class="section"><h2>{title}</h2>{params_html}</div>'
+            )
+        elif "策略表现:" in section:
+            # 策略表现部分
+            title, content = section.split(":", 1)
+            metrics = content.strip().split("\n")
+            metrics_html = '<div class="performance">'
+            for metric in metrics:
+                if metric.strip():
+                    # 检查是否是有效的指标行
+                    if ": " in metric:
+                        label, value = metric.replace("- ", "").split(": ", 1)
+                        metrics_html += f"""
+                            <div class="performance-item">
+                                <div class="label">{label}</div>
+                                <div class="value">{value}</div>
+                            </div>
+                        """
+                    else:
+                        # 如果不是标准格式的指标行，作为普通文本显示
+                        metrics_html += (
+                            f'<div class="text">{metric.replace("- ", "")}</div>'
+                        )
+            metrics_html += "</div>"
+            formatted_sections.append(
+                f'<div class="section"><h2>{title}</h2>{metrics_html}</div>'
+            )
+        elif "交易记录:" in section:
+            # 交易记录部分
+            title, content = section.split(":", 1)
+            # 将ASCII表格转换为HTML表格
+            rows = content.strip().split("\n")
+            table_html = '<table class="trade-table">'
+
+            # 处理表头
+            header_row = rows[1].strip()  # 第二行是表头
+            headers = [h.strip() for h in header_row.split("|") if h.strip()]
+            table_html += "<thead><tr>"
+            for header in headers:
+                table_html += f"<th>{header}</th>"
+            table_html += "</tr></thead>"
+
+            # 处理数据行
+            table_html += "<tbody>"
+            for row in rows[3:-1]:  # 跳过表头和分隔行
+                if row.strip() and not all(c in "+-|" for c in row):  # 跳过分隔行
+                    cells = [cell.strip() for cell in row.split("|") if cell.strip()]
+                    table_html += "<tr>"
+                    # 根据列的类型设置不同的样式
+                    for i, cell in enumerate(cells):
+                        # 数字列使用右对齐
+                        if i in [
+                            2,
+                            3,
+                            4,
+                            5,
+                            6,
+                            7,
+                        ]:  # 价格、数量、资金、手续费、收益、剩余资金列
+                            table_html += f'<td class="number">{cell}</td>'
+                        else:
+                            table_html += f"<td>{cell}</td>"
+                    table_html += "</tr>"
+            table_html += "</tbody></table>"
+
+            formatted_sections.append(
+                f'<div class="section"><h2>{title}</h2>{table_html}</div>'
+            )
+        elif "建议买入" in section:
+            # 建议买入部分，作为普通内容处理
+            content_html = section.replace("\n", "<br>")
+            formatted_sections.append(f'<div class="section">{content_html}</div>')
+        else:
+            # 其他内容
+            content_html = section.replace("\n", "<br>")
+            formatted_sections.append(f'<div class="section">{content_html}</div>')
+
+    # 替换信号类型的标记
+    content_html = "\n".join(formatted_sections)
+    content_html = content_html.replace("买入", '<span class="buy">买入</span>')
+    content_html = content_html.replace("卖出", '<span class="sell">卖出</span>')
+    content_html = content_html.replace("持有", '<span class="hold">持有</span>')
+
+    # 组装完整的HTML
     return "".join(
         [
             "<html>",
@@ -282,63 +389,17 @@ def _to_html(
             style,
             "</head>",
             "<body>",
-            base_html,
-            stop_loss_html,
-            trade_html,
-            notice_html,
+            '<div class="container">',
+            content_html,
+            "</div>",
             "</body>",
             "</html>",
         ]
     )
 
 
-def _ascii_table_to_html(ascii_table: str) -> str:
-    """将ASCII表格转换为HTML表格"""
-    if not ascii_table or "没有发生交易" in ascii_table:
-        return "<p>没有发生交易</p>"
-
-    rows = ascii_table.split("\n")
-    html_table = '<table class="trade-table">\n'
-
-    # 处理表头
-    header_row = [cell.strip() for cell in rows[1].split("|")[1:-1]]
-    html_table += "<thead>\n<tr>\n"
-    for header in header_row:
-        html_table += f"<th>{header}</th>\n"
-    html_table += "</tr>\n</thead>\n<tbody>\n"
-
-    # 处理数据行
-    for row in rows[3:-1]:  # 跳过表头和分隔线
-        if "+-" in row:  # 跳过分线
-            continue
-        cells = [cell.strip() for cell in row.split("|")[1:-1]]
-        html_table += "<tr>\n"
-        for i, cell in enumerate(cells):
-            # 根据列的类型添加不同的样式
-            if i == 0:  # 类型列
-                class_name = cell.lower()
-                html_table += f'<td class="{class_name}">{cell}</td>\n'
-            elif i in [2, 4, 5, 6, 7]:  # 数值列
-                html_table += f'<td class="number">{cell}</td>\n'
-            else:
-                html_table += f"<td>{cell}</td>\n"
-        html_table += "</tr>\n"
-
-    html_table += "</tbody>\n</table>"
-    return html_table
-
-
-def _get_signal_level(signal_type: str) -> str:
-    """获取信号的通知级别"""
-    return {
-        "买入": "active",
-        "卖出": "timeSensitive",
-        "持有": "passive",
-    }.get(signal_type, "passive")
-
-
 def _to_markdown(text: str) -> str:
-    """将普通文本转换为markdown格式"""
+    """将基础内容转换为markdown格式，只负责格式转换"""
     lines = text.split("\n")
     formatted_lines = []
 
@@ -346,7 +407,6 @@ def _to_markdown(text: str) -> str:
     if lines:
         first_line = lines[0]
         if "ETF交易信号" in first_line:
-            # 保持原始格式，确保中文名称和代码都显示
             formatted_lines.append(f"# {first_line}")
         else:
             formatted_lines.append(first_line)
@@ -369,3 +429,12 @@ def _to_markdown(text: str) -> str:
         formatted_lines.append(line)
 
     return "\n".join(formatted_lines)
+
+
+def _get_signal_level(signal_type: str) -> str:
+    """获取信号的通知级别"""
+    return {
+        "买入": "active",
+        "卖出": "timeSensitive",
+        "持有": "passive",
+    }.get(signal_type, "passive")

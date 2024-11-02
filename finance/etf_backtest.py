@@ -77,45 +77,36 @@ class ETFStrategy(bt.Strategy):
         # 交叉信号
         self.crossover = bt.indicators.CrossOver(self.sma_short, self.sma_long)
 
+        # 确保添加了所有必要的分析器
+        self.analyzers.returns = bt.analyzers.Returns()
+        self.analyzers.sharpe = bt.analyzers.SharpeRatio()
+        self.analyzers.drawdown = bt.analyzers.DrawDown()
+
     def next(self):
         # 获取当前日期和下一个交易日
         current_date = self.data.datetime.date(0)
         try:
-            next_date = self.data.datetime.date(1)  # 尝试获取下一个交易日
+            next_date = self.data.datetime.date(1)
         except IndexError:
-            next_date = current_date  # 如果是最后一个交易日，使用当前日期
+            next_date = current_date
 
-        # 检查是否需要发送通知
-        should_send_notify = False
-        today = datetime.now().date()
-
-        # 添加更详细的调试日志
-        if self.params.debug:
-            logger.debug(
-                f"通知条件检查:\n"
-                f"- 当前日期: {current_date}\n"
-                f"- 下一个交易日: {next_date}\n"
-                f"- 今天: {today}\n"
-                f"- 最后一个交易日: {self.data.datetime.date(-1)}\n"
-                f"- 最后信号日期: {getattr(self, 'last_signal_date', None)}\n"
-                f"- 通知器: {list(self.params.notifiers.keys()) if self.params.notifiers else '无'}"
-            )
-
-        # 添加日期过滤，确保每个日期只发送一次通知
-        if hasattr(self, "last_signal_date") and current_date == self.last_signal_date:
-            logger.debug(f"跳过重复通知 - 日期: {current_date}")
-            return  # 如果今天已经发过信号了，就不再发送
-
-        if self.order:
-            return
+        # 准备止损策略说明
+        stop_loss_strategy = (
+            f"止损策略:\n"
+            f"- {'使用' if self.params.use_atr_stop else '不使用'}ATR动态止损\n"
+            f"- ATR周期: {self.params.atr_period}日\n"
+            f"- ATR倍数: {self.params.atr_multiplier}\n"
+            f"- 固定止损比例: {self.params.stop_loss:.1%}\n"
+            f"- 最终止损价格: 取ATR止损价和比例止损价的较高者\n"
+            f"- 均线下穿卖出: {'启用' if self.params.enable_crossover_sell else '禁用'}\n"
+        )
 
         # 准备基础信号数据
         signal_data = {
             "symbol": self.params.symbol,
-            "name": get_etf_name(
-                self.params.symbol
-            ),  # 直接调用 get_etf_name 获取中文名称
+            "name": get_etf_name(self.params.symbol),
             "date": current_date,
+            "start_date": self.data.datetime.date(0),
             "price": self.dataclose[0],
             "sma_short": self.sma_short[0],
             "sma_long": self.sma_long[0],
@@ -125,128 +116,56 @@ class ETFStrategy(bt.Strategy):
             "atr_period": self.params.atr_period,
             "atr_multiplier": self.params.atr_multiplier,
             "stop_loss": self.params.stop_loss,
-            "signal_type": "持有" if self.position else "观察",  # 默认状态
+            "signal_type": "持有" if self.position else "观察",
+            "position_details": "当前持仓" if self.position else "当前无持仓",
+            "signal_description": "策略运行中",
+            "signal_details": (
+                f"当前状态指标:\n"
+                f"短期均线: MA{self.params.short_period} = {self.sma_short[0]:.3f}\n"
+                f"长期均线: MA{self.params.long_period} = {self.sma_long[0]:.3f}\n"
+                f"均线差值: {(self.sma_short[0] - self.sma_long[0]):.3f}\n"
+                f"ATR指标: {self.atr[0]:.3f}\n"
+                f"当前价格: {self.dataclose[0]:.3f}\n\n"
+                f"{stop_loss_strategy}"
+            ),
         }
 
-        # 构建持仓数据（如果有）
+        # 准备持仓数据
         holding_data = None
         if self.position:
+            current_return = (self.dataclose[0] - self.buyprice) / self.buyprice
             holding_data = {
                 "买入时间": self.buy_date,
                 "买入价格": self.buyprice,
-                "当前收益": (
-                    (self.dataclose[0] - self.buyprice) / self.buyprice
-                    if self.buyprice
-                    else 0
-                ),
+                "当前收益": current_return,
                 "最高价格": self.highest_price,
                 "当前价格": self.dataclose[0],
             }
 
-        # 修改判断逻辑：当next_date == current_date时，说明这是最后一个交易日
+            # 添加次日止损提示
+            current_price = self.dataclose[0]
+            atr_stop = current_price - (self.atr[0] * self.params.atr_multiplier)
+            pct_stop = current_price * (1 - self.params.stop_loss)
+            final_stop = max(atr_stop, pct_stop)
+
+            signal_data["signal_details"] += (
+                f"\n次日止损提示:\n"
+                f"当前价格: {current_price:.3f}\n"
+                f"ATR止损价: {atr_stop:.3f} (当前价格 - {self.params.atr_multiplier}倍ATR)\n"
+                f"比例止损价: {pct_stop:.3f} (当前价格 × (1 - {self.params.stop_loss:.1%}))\n"
+                f"最终止损价: {final_stop:.3f} (取两者较高者)\n\n"
+                f"注意：如果次日价格在不超过当前价格的情况下回落到 {final_stop:.3f}，"
+                f"将触发止损卖出。如果价格创新高，止损价格会相应提高。"
+            )
+
+        # 保存最后一天的信号数据，供回测结束后使用
         if next_date == current_date:
-            should_send_notify = True
-            logger.debug(
-                f"将发送通知 - 当前日期: {current_date}, "
-                f"原因: 最后一个交易日, "
-                f"should_send_notify: {should_send_notify}, "
-                f"has_notifiers: {bool(self.params.notifiers)}"
-            )
+            self.last_signal_data = signal_data
+            self.last_holding_data = holding_data
 
-            # 在最后一个交易日，直接发送当前状态通知
-            if self.params.notifiers:
-                # 更新 signal_data 添加必要的字段
-                signal_data.update(
-                    {
-                        "signal_details": (
-                            f"当前状态指标:\n"
-                            f"- 短期均线(MA{self.params.short_period}): {self.sma_short[0]:.3f}\n"
-                            f"- 长期均线(MA{self.params.long_period}): {self.sma_long[0]:.3f}\n"
-                            f"- 均线差值: {(self.sma_short[0] - self.sma_long[0]):.3f}\n"
-                            f"- ATR({self.params.atr_period}): {self.atr[0]:.3f}\n"
-                            f"- 当前价格: {self.dataclose[0]:.3f}"
-                        ),
-                        "signal_description": "最后交易日状态汇报",
-                        "position_details": "持有" if self.position else "观察",
-                    }
-                )
-
-                # 生成交易记录表格
-                trade_table = self.get_trade_table()
-                signal_data["trade_table"] = trade_table  # 添加交易记录表格到信号数据中
-
-                # 根据通知器类型使用不同的消息格式
-                for notifier_name, notifier in self.params.notifiers.items():
-                    try:
-                        # 根据通知器类型选择消息格式
-                        message_type = (
-                            "markdown"
-                            if isinstance(notifier, WecomBotNotifier)
-                            else "html"
-                        )
-                        message = build_message(
-                            signal_data, holding_data, message_type=message_type
-                        )
-
-                        if self.params.debug:
-                            logger.debug(
-                                f"准备发送的消息内容 - 通知器: {notifier_name}, 格式: {message_type}"
-                            )
-
-                        response = notifier.send(message)
-                        if self.params.debug:
-                            logger.debug(
-                                f"通知发送结果 - 通知器: {notifier_name}, "
-                                f"返回值: {response}"
-                            )
-                    except Exception as e:
-                        logger.error(
-                            f"发送通知失败 - 通知器: {notifier_name}, "
-                            f"错误: {str(e)}"
-                        )
-                self.last_signal_date = current_date
-
-        # 添加日期过滤，确保每个日期只发送一次通知
-        if hasattr(self, "last_signal_date") and current_date == self.last_signal_date:
-            logger.debug(f"跳过重复通知 - 日期: {current_date}")
-            return  # 如果今已经发过信号了，就不再发送
-
+        # 执行交易逻辑
         if self.order:
             return
-
-        # 准备基础信号数据
-        signal_data = {
-            "symbol": self.params.symbol,
-            "name": get_etf_name(
-                self.params.symbol
-            ),  # 直接调用 get_etf_name 获取中文名称
-            "date": current_date,
-            "price": self.dataclose[0],
-            "sma_short": self.sma_short[0],
-            "sma_long": self.sma_long[0],
-            "atr": self.atr[0],
-            "short_period": self.params.short_period,
-            "long_period": self.params.long_period,
-            "atr_period": self.params.atr_period,
-            "atr_multiplier": self.params.atr_multiplier,
-            "stop_loss": self.params.stop_loss,
-            "signal_type": "持有" if self.position else "观察",  # 默认状态
-        }
-
-        # 构建持仓数据（如果有）
-        holding_data = None
-        if self.position:
-            holding_data = {
-                "买入时间": self.buy_date,
-                "买入价格": self.buyprice,
-                "当前收益": (
-                    (self.dataclose[0] - self.buyprice) / self.buyprice
-                    if self.buyprice
-                    else 0
-                ),
-                "最高价格": self.highest_price,
-                "当前价格": self.dataclose[0],
-            }
 
         # 执行交易逻辑，不受通知日期限制
         if not self.position:  # 没有持仓
@@ -261,13 +180,13 @@ class ETFStrategy(bt.Strategy):
                         "signal_type": "买入",
                         "signal_details": (
                             f"买入信号指标:\n"
-                            f"- 短期均线(MA{self.params.short_period}): {self.sma_short[0]:.3f}\n"
-                            f"- 长期均线(MA{self.params.long_period}): {self.sma_long[0]:.3f}\n"
-                            f"- 均线差值: {(self.sma_short[0] - self.sma_long[0]):.3f}\n"
-                            f"- ATR({self.params.atr_period}): {self.atr[0]:.3f}\n\n"
-                            f"建议买入价格: {self.dataclose[0]:.3f}\n"
-                            f"建议买入数量: {size}股\n"
-                            f"预计使用资金: {size * self.dataclose[0]:.2f}\n"
+                            f"短期均线: MA{self.params.short_period} = {self.sma_short[0]:.3f}\n"
+                            f"长期均线: MA{self.params.long_period} = {self.sma_long[0]:.3f}\n"
+                            f"均线差值: {(self.sma_short[0] - self.sma_long[0]):.3f}\n"
+                            f"ATR指标: {self.atr[0]:.3f}\n"
+                            f"买入价格: {self.dataclose[0]:.3f}\n"
+                            f"买入数量: {size}股\n"
+                            f"使用资金: {size * self.dataclose[0]:.2f}\n"
                             f"可用资金: {available_cash:.2f}"
                         ),
                         "position_details": "当前无持仓",
@@ -284,54 +203,12 @@ class ETFStrategy(bt.Strategy):
                         f"数量: {size}, "
                         f"金额: {size * self.dataclose[0]:.2f}"
                     )
-                    if should_send_notify and self.params.notifiers:
-                        logger.info(
-                            f"发送买入通知 - 日期: {current_date}, "
-                            f"价格: {self.dataclose[0]:.2f}, "
-                            f"数量: {size}"
-                        )
-                        message = build_message(
-                            signal_data, holding_data, message_type="html"
-                        )
-                        if self.params.debug:
-                            logger.debug(f"准备发送的消息内容: {message}")
-
-                        for notifier_name, notifier in self.params.notifiers.items():
-                            try:
-                                # 根据通知器类型选择消息格式
-                                message_type = (
-                                    "markdown"
-                                    if isinstance(notifier, WecomBotNotifier)
-                                    else "html"
-                                )
-                                message = build_message(
-                                    signal_data, holding_data, message_type=message_type
-                                )
-
-                                if self.params.debug:
-                                    logger.debug(
-                                        f"准备发送的消息内容 - 通知器: {notifier_name}, 格式: {message_type}"
-                                    )
-
-                                response = notifier.send(message)
-                                if self.params.debug:
-                                    logger.debug(
-                                        f"通知发送结果 - 通知器: {notifier_name}, "
-                                        f"返回值: {response}"
-                                    )
-                            except Exception as e:
-                                logger.error(
-                                    f"发送通知失败 - 通知器: {notifier_name}, "
-                                    f"错误: {str(e)}"
-                                )
-                        self.last_signal_date = current_date
-                    else:
-                        logger.debug(
-                            f"跳过买入通知 - 日期: {current_date}, "
-                            f"should_send_notify: {should_send_notify}, "
-                            f"has_notifiers: {bool(self.params.notifiers)}, "
-                            f"notifiers: {list(self.params.notifiers.keys()) if self.params.notifiers else '无'}"
-                        )
+                    self.last_signal_date = current_date
+                else:
+                    logger.debug(
+                        f"跳过买入通知 - 日期: {current_date}, "
+                        f"notifiers: {list(self.params.notifiers.keys()) if self.params.notifiers else '无'}"
+                    )
 
         else:  # 有持仓
             # 更新最高价格
@@ -355,13 +232,13 @@ class ETFStrategy(bt.Strategy):
                         "signal_type": "卖出",
                         "signal_details": (
                             f"止损卖出指标:\n"
-                            f"- 当前价格: {self.dataclose[0]:.3f}\n"
-                            f"- 最高价: {self.highest_price:.3f}\n"
-                            f"- ATR止损价: {self.highest_price - (self.atr[0] * self.params.atr_multiplier):.3f}\n"
-                            f"- 比例止损价: {self.highest_price * (1 - self.params.stop_loss):.3f}\n"
-                            f"- 最终止损价: {stop_price:.3f}\n"
-                            f"- 跌幅: {((self.dataclose[0] - self.highest_price) / self.highest_price * 100):.2f}%\n"
-                            f"- ATR({self.params.atr_period}): {self.atr[0]:.3f}"
+                            f"当前价格: {self.dataclose[0]:.3f}\n"
+                            f"最高价格: {self.highest_price:.3f}\n"
+                            f"ATR止损价: {self.highest_price - (self.atr[0] * self.params.atr_multiplier):.3f}\n"
+                            f"比例止损价: {self.highest_price * (1 - self.params.stop_loss):.3f}\n"
+                            f"最终止损价: {stop_price:.3f}\n"
+                            f"价格跌幅: {((self.dataclose[0] - self.highest_price) / self.highest_price * 100):.2f}%\n"
+                            f"ATR指标: {self.atr[0]:.3f}"
                         ),
                         "position_details": "即将清空持仓",
                         "signal_description": "触发止损条件，建议卖出",
@@ -371,56 +248,6 @@ class ETFStrategy(bt.Strategy):
                 order.sell_reason = "触发止损"  # 设置卖出原因
                 self.order = order
 
-                # 只在需要时发送通知
-                if should_send_notify and self.params.notifiers:
-                    logger.info(
-                        f"发送止损卖出通知 - 日期: {current_date}, "
-                        f"价格: {self.dataclose[0]:.2f}, "
-                        f"止损价: {stop_price:.2f}"
-                    )
-                    message = build_message(
-                        signal_data, holding_data, message_type="html"
-                    )
-                    if self.params.debug:
-                        logger.debug(f"准备发送的消息内容: {message}")
-
-                    for notifier_name, notifier in self.params.notifiers.items():
-                        try:
-                            # 根据通知器类型选择消息格式
-                            message_type = (
-                                "markdown"
-                                if isinstance(notifier, WecomBotNotifier)
-                                else "html"
-                            )
-                            message = build_message(
-                                signal_data, holding_data, message_type=message_type
-                            )
-
-                            if self.params.debug:
-                                logger.debug(
-                                    f"准备发送的消息内容 - 通知器: {notifier_name}, 格式: {message_type}"
-                                )
-
-                            response = notifier.send(message)
-                            if self.params.debug:
-                                logger.debug(
-                                    f"通知发送结果 - 通知器: {notifier_name}, "
-                                    f"返回值: {response}"
-                                )
-                        except Exception as e:
-                            logger.error(
-                                f"发送通知失败 - 通知器: {notifier_name}, "
-                                f"错误: {str(e)}"
-                            )
-                    self.last_signal_date = current_date
-                else:
-                    logger.debug(
-                        f"跳过止损卖出通知 - 日期: {current_date}, "
-                        f"should_send_notify: {should_send_notify}, "
-                        f"has_notifiers: {bool(self.params.notifiers)}, "
-                        f"notifiers: {list(self.params.notifiers.keys()) if self.params.notifiers else '无'}"
-                    )
-
             # 检查是否触发均线下穿卖出
             elif self.params.enable_crossover_sell and self.crossover < 0:
                 signal_data.update(
@@ -428,12 +255,12 @@ class ETFStrategy(bt.Strategy):
                         "signal_type": "卖出",
                         "signal_details": (
                             f"均线下穿卖出指标:\n"
-                            f"- 短期均线(MA{self.params.short_period}): {self.sma_short[0]:.3f}\n"
-                            f"- 长均线(MA{self.params.long_period}): {self.sma_long[0]:.3f}\n"
-                            f"- 均线差值: {(self.sma_short[0] - self.sma_long[0]):.3f}\n"
-                            f"- ATR({self.params.atr_period}): {self.atr[0]:.3f}\n"
-                            f"- 当前价格: {self.dataclose[0]:.3f}\n"
-                            f"- 持仓收益: {((self.dataclose[0] - self.buyprice) / self.buyprice * 100):.2f}%"
+                            f"短期均线: MA{self.params.short_period} = {self.sma_short[0]:.3f}\n"
+                            f"长期均线: MA{self.params.long_period} = {self.sma_long[0]:.3f}\n"
+                            f"均线差值: {(self.sma_short[0] - self.sma_long[0]):.3f}\n"
+                            f"ATR指标: {self.atr[0]:.3f}\n"
+                            f"当前价格: {self.dataclose[0]:.3f}\n"
+                            f"持仓收益: {((self.dataclose[0] - self.buyprice) / self.buyprice * 100):.2f}%"
                         ),
                         "position_details": "即将清空持仓",
                         "signal_description": "短期均线下穿长期均线，建议卖出",
@@ -442,76 +269,6 @@ class ETFStrategy(bt.Strategy):
                 order = self.sell(size=self.position.size)
                 order.sell_reason = "均线下穿"  # 设置卖出原因
                 self.order = order
-
-                # 只在需要时发送通知
-                if should_send_notify and self.params.notifiers:
-                    logger.info(
-                        f"发送均线下穿卖出通知 - 日期: {current_date}, "
-                        f"价格: {self.dataclose[0]:.2f}"
-                    )
-                    message = build_message(
-                        signal_data, holding_data, message_type="html"
-                    )
-                    if self.params.debug:
-                        logger.debug(f"准备发送的消息内容: {message}")
-
-                    for notifier_name, notifier in self.params.notifiers.items():
-                        try:
-                            # 根据通知器类型选择消息格式
-                            message_type = (
-                                "markdown"
-                                if isinstance(notifier, WecomBotNotifier)
-                                else "html"
-                            )
-                            message = build_message(
-                                signal_data, holding_data, message_type=message_type
-                            )
-
-                            if self.params.debug:
-                                logger.debug(
-                                    f"准备发送的消息内容 - 通知器: {notifier_name}, 格式: {message_type}"
-                                )
-
-                            response = notifier.send(message)
-                            if self.params.debug:
-                                logger.debug(
-                                    f"通知发送结果 - 通知器: {notifier_name}, "
-                                    f"返回值: {response}"
-                                )
-                        except Exception as e:
-                            logger.error(
-                                f"发送通知失败 - 通知器: {notifier_name}, "
-                                f"错误: {str(e)}"
-                            )
-                    self.last_signal_date = current_date
-                else:
-                    logger.debug(
-                        f"跳过均线下穿卖出通知 - 日期: {current_date}, "
-                        f"should_send_notify: {should_send_notify}, "
-                        f"has_notifiers: {bool(self.params.notifiers)}, "
-                        f"notifiers: {list(self.params.notifiers.keys()) if self.params.notifiers else '无'}"
-                    )
-
-            else:  # 持有信号
-                signal_data.update(
-                    {
-                        "signal_type": "持有",
-                        "signal_details": (
-                            f"持有状态指标:\n"
-                            f"- 短期均线(MA{self.params.short_period}): {self.sma_short[0]:.3f}\n"
-                            f"- 长期均线(MA{self.params.long_period}): {self.sma_long[0]:.3f}\n"
-                            f"- 均线差值: {(self.sma_short[0] - self.sma_long[0]):.3f}\n"
-                            f"- ATR({self.params.atr_period}): {self.atr[0]:.3f}\n"
-                            f"- 当前价格: {self.dataclose[0]:.3f}\n"
-                            f"- 最高价格: {self.highest_price:.3f}\n"
-                            f"- 止损价格: {stop_price:.3f}\n"
-                            f"- 止损距离: {((self.dataclose[0] - stop_price) / self.dataclose[0] * 100):.2f}%\n"
-                            f"- 持仓收益: {((self.dataclose[0] - self.buyprice) / self.buyprice * 100):.2f}%"
-                        ),
-                        "position_details": "继续持有",
-                        "signal_description": "当前位置安全，继续持有",
-                    }
-                )
 
     def notify_order(self, order):
         if self.params.debug:
@@ -546,7 +303,10 @@ class ETFStrategy(bt.Strategy):
                     f"Cost: {order.executed.value:.2f}, "
                     f"Commission: {order.executed.comm:.2f}"
                 )
-            else:
+            else:  # 卖出时
+                # 清除缓存的买入前表现
+                # self.pre_position_performance = {...} 删除这行
+
                 sell_value = order.executed.price * order.executed.size
                 commission = order.executed.comm
                 profit = round(
@@ -618,70 +378,9 @@ class ETFStrategy(bt.Strategy):
         self.order = None
 
     def stop(self):
-        print("\n交易记录:")
-        if not self.trades:
-            print("没有发生交易")
-        else:
-            headers = [
-                "类型",
-                "日期",
-                "价格",
-                "数量",
-                "消耗/获得资金",
-                "手续费",
-                "收益",
-                "剩余资金",
-                "指标条件",
-            ]
-            table_data = []
-            for trade in self.trades:
-                if trade["类型"] == "买入":
-                    table_data.append(
-                        [
-                            trade["类型"],
-                            trade["日期"],
-                            f"{trade['价格']:.3f}",
-                            f"{trade['数量']:.0f}",
-                            f"{trade['消耗资金']:.4f}",
-                            f"{trade['手续费']:.4f}",
-                            "-",
-                            f"{trade['剩余资金']:.4f}",
-                            f"MA{self.params.short_period}({self.sma_short[0]:.3f}) > MA{self.params.long_period}({self.sma_long[0]:.3f})",
-                        ]
-                    )
-                else:  # 卖出
-                    table_data.append(
-                        [
-                            trade["类型"],
-                            trade["日期"],
-                            f"{trade['价格']:.3f}",
-                            f"{trade['数量']:.0f}",
-                            f"{trade['消耗资金']:.4f}",  # 修改这里，统一使用 '消耗资金'
-                            f"{trade['手续费']:.4f}",
-                            f"{trade['收益']:.4f}",
-                            f"{trade['剩余资金']:.4f}",
-                            trade["指标条件"],
-                        ]
-                    )
-
-            print(
-                tabulate(
-                    table_data,
-                    headers=headers,
-                    tablefmt="grid",
-                    colalign=(
-                        "left",  # 类型
-                        "left",  # 日期
-                        "right",  # 价格
-                        "right",  # 数量
-                        "right",  # 消耗/获得资金
-                        "right",  # 手续费
-                        "right",  # 收益
-                        "right",  # 剩余资金
-                        "left",  # 指标条件
-                    ),
-                )
-            )
+        """策略结束时调用"""
+        # 移除所有通知发送代码，因为已经在 next 方法中发送了最后一天的完整通知
+        pass
 
     # 添加一个新方法来生成交易记录表格
     def get_trade_table(self):
@@ -853,6 +552,7 @@ def get_etf_data(symbol, start_date=None):
 def run_backtest(
     symbol,
     start_date,
+    end_date,
     initial_cash,
     short_period,
     long_period,
@@ -864,18 +564,18 @@ def run_backtest(
     enable_crossover_sell,
     debug,
     notifiers=None,
-    notify_date=None,
 ):
     cerebro = bt.Cerebro()
 
-    # 传入开始日期，确保数据是最新
+    # 传入开始日期和结束日期，确保数据是最新
     data = get_etf_data(symbol, start_date)
     if data is None:
         return None
 
     # 日期过滤，确保无时区
     start_date = pd.to_datetime(start_date).tz_localize(None)
-    data = data[(data.index >= start_date)]
+    end_date = pd.to_datetime(end_date).tz_localize(None)
+    data = data[(data.index >= start_date) & (data.index <= end_date)]
 
     # 创建PandasData feed
     feed = bt.feeds.PandasData(
@@ -906,7 +606,6 @@ def run_backtest(
         enable_crossover_sell=enable_crossover_sell,
         debug=debug,
         notifiers=notifiers or {},
-        notify_date=notify_date,
     )
 
     cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name="sharpe")
@@ -916,36 +615,79 @@ def run_backtest(
     results = cerebro.run()
     strat = results[0]
 
+    # 获取分析器数据
+    analysis = strat.analyzers.returns.get_analysis()
+    sharpe = strat.analyzers.sharpe.get_analysis()
+    drawdown = strat.analyzers.drawdown.get_analysis()
+
+    # 处理数据为None的情况，用0.0填充
+    sharpe = {key: 0.0 if value is None else value for key, value in sharpe.items()}
+    analysis = {key: 0.0 if value is None else value for key, value in analysis.items()}
+    drawdown = {
+        key: {"drawdown": 0.0} if value is None else value
+        for key, value in drawdown.items()
+    }
+
+    # 如果有通知器，发送最后一天的信号数据和性能数据
+    if notifiers and hasattr(strat, "last_signal_data"):
+        # 添加性能数据到信号详情
+        performance_text = "\n\n策略表现:\n"
+        performance_text += f"- 夏普比率: {sharpe['sharperatio']:.4f}\n"
+        performance_text += f"- 年化收益率: {analysis['rnorm100']:.2f}%\n"
+        performance_text += f"- 最大回撤: {drawdown['max']['drawdown']:.2f}%"
+
+        strat.last_signal_data["signal_details"] += performance_text
+
+        # 生成交易记录表格
+        trade_table = strat.get_trade_table()
+        strat.last_signal_data["trade_table"] = trade_table
+
+        # 发送通知
+        for notifier_name, notifier in notifiers.items():
+            message_type = (
+                "markdown" if isinstance(notifier, WecomBotNotifier) else "html"
+            )
+            message = build_message(
+                strat.last_signal_data,
+                strat.last_holding_data,
+                message_type=message_type,
+            )
+            response = notifier.send(message)
+            if debug:
+                logger.debug(
+                    f"通知发送结果 - 通知器: {notifier_name}, " f"返回值: {response}"
+                )
+
     return {
-        "短期均线": short_period,
-        "长期均线": long_period,
-        "止损比例": stop_loss,
-        "ATR周期": atr_period,
-        "ATR倍数": atr_multiplier,
-        "使用ATR止损": use_atr_stop,
-        "资金使用比例": cash_ratio,
+        "短期均线": strat.params.short_period,
+        "长期均线": strat.params.long_period,
+        "止损比例": stop_loss,  # 使用传入的参数值
+        "ATR周期": strat.params.atr_period,
+        "ATR倍数": strat.params.atr_multiplier,
+        "使用ATR止损": strat.params.use_atr_stop,
+        "资金使用比例": strat.params.cash_ratio,
         "最终资金": cerebro.broker.getvalue(),
-        "夏普比率": strat.analyzers.sharpe.get_analysis()["sharperatio"],
-        "年化收益率": strat.analyzers.returns.get_analysis()["rnorm100"],
-        "最大回撤": strat.analyzers.drawdown.get_analysis()["max"]["drawdown"],
+        "夏普比率": sharpe["sharperatio"],  # 直接使用原始数据
+        "年化收益率": analysis["rnorm100"],  # 直接使用原始数据
+        "最大回撤": drawdown["max"]["drawdown"],  # 直接使用原始数据
     }
 
 
 def optimize_parameters(
     symbol,
     start_date,
+    end_date,
     initial_cash,
     short_period_range,
     long_period_range,
     stop_loss_range,
-    atr_period,  # 这个参数可以是 None
+    atr_period,
     atr_multiplier_range,
     use_atr_stop,
     cash_ratio_range,
     enable_crossover_sell,
     debug,
     notifiers=None,
-    notify_date=None,
 ):
     results = []
 
@@ -963,9 +705,8 @@ def optimize_parameters(
         cash_ratio_range,
     ):
         if short_period >= long_period:
-            continue  # 跳过短期均线大于或等于长期均线的情况
+            continue
 
-        # 如果用户没有指定 ATR 周期，使用当前参数组合的长期均线周期
         current_atr_period = atr_period if atr_period is not None else long_period
         if debug:
             logger.debug(
@@ -975,18 +716,18 @@ def optimize_parameters(
         result = run_backtest(
             symbol,
             start_date,
+            end_date,
             initial_cash,
             short_period,
             long_period,
             stop_loss,
-            current_atr_period,  # 使用当前参数组合的 ATR 周期
+            current_atr_period,
             atr_multiplier,
             use_atr_stop,
             cash_ratio,
             enable_crossover_sell,
             debug,
             notifiers=notifiers,
-            notify_date=notify_date,
         )
         if result:
             results.append(result)
@@ -1010,7 +751,7 @@ def parse_range(range_str):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="ETF回测数优化")
+    parser = argparse.ArgumentParser(description="ETF策略回测程序")
     parser.add_argument(
         "symbol",
         type=str,
@@ -1018,6 +759,12 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--start_date", type=str, default="2018-01-01", help="回测开始日期 (YYYY-MM-DD)"
+    )
+    parser.add_argument(
+        "--end_date",
+        type=str,
+        default=datetime.now().strftime("%Y-%m-%d"),
+        help="回测结束日期 (YYYY-MM-DD)",
     )
     parser.add_argument(
         "--initial_cash", type=float, default=10000.0, help="初资金，默认10000元"
@@ -1069,13 +816,7 @@ if __name__ == "__main__":
         help="禁用均线下穿出策略",
     )
     parser.add_argument("--debug", action="store_true", help="启用调试模式")
-    # parser.add_argument(
-    #     "--notifiers",
-    #     type=str,
-    #     nargs="+",
-    #     choices=["mail", "wecom", "bark"],
-    #     help="通知方式，可选多个：mail=邮件, wecom=企业微信机器人, bark=Bark推送",
-    # )
+
     parser.add_argument(
         "--email-recipients",
         type=str,
@@ -1092,12 +833,7 @@ if __name__ == "__main__":
         type=str,
         help="Bark推送URL指定此参数将启用Bark通知。",
     )
-    parser.add_argument(
-        "--notify-date",
-        type=str,
-        help="指定要发送通知的日期 (YYYY-MM-DD)，默认为今天",
-        default=datetime.now().strftime("%Y-%m-%d"),
-    )
+
     args = parser.parse_args()
 
     # 移除可能的市场后缀
@@ -1114,7 +850,7 @@ if __name__ == "__main__":
     cash_ratio_range = [round(x, 2) for x in parse_range(args.cash_ratio_range)]
     atr_multiplier_range = [round(x, 1) for x in parse_range(args.atr_multiplier_range)]
 
-    # 自动识别需要启用的通知器
+    # 自动别需要启用的通知器
     notifier_types = []
     if args.wecom_webhook:
         notifier_types.append("wecom")
@@ -1137,20 +873,6 @@ if __name__ == "__main__":
         )
         logger.debug(f"初始化的通知器: {notifiers}")
 
-    # 处理通知日期
-    notify_date = None
-    if args.notify_date:
-        try:
-            notify_date = pd.to_datetime(args.notify_date).date()
-            today = datetime.now().date()
-            if notify_date > today:
-                logger.warning(f"指定的日期 {notify_date} 是未来日期，将使用今天的日期")
-                notify_date = today
-            logger.debug(f"设置通知日期为: {notify_date}")
-        except Exception as e:
-            logger.error(f"通知日期格式错误: {e}")
-            sys.exit(1)
-
     # 如果指定了 atr_multiplier_range，则自动启用 ATR 止损
     if args.atr_multiplier_range:
         args.use_atr_stop = True
@@ -1165,18 +887,18 @@ if __name__ == "__main__":
     results = optimize_parameters(
         symbol,
         args.start_date,
+        args.end_date,
         args.initial_cash,
         short_period_range,
         long_period_range,
         stop_loss_range,
-        args.atr_period,  # 这里使用处理后的 atr_period
+        args.atr_period,
         atr_multiplier_range,
         args.use_atr_stop,
         cash_ratio_range,
         not args.disable_crossover_sell,
         args.debug,
         notifiers=notifiers,
-        notify_date=notify_date,
     )
 
     # 将排序逻辑修改为按年化收益率降序排列
@@ -1213,9 +935,13 @@ if __name__ == "__main__":
             f"{r['使用ATR止损']}",
             f"{r['资金使用比例']:.2f}",
             f"{r['最终资金']:.2f}",
-            f"{r['年化收益率']:.2f}",
-            f"{r['夏普比率']:.4f}" if r["夏普比率"] is not None else "N/A",
-            f"{r['最大回撤']:.2f}",
+            (
+                r["年化收益率"]
+                if r["年化收益率"] == "N/A"
+                else f"{float(r['年化收益率']):.2f}"
+            ),
+            r["夏普比率"] if r["夏普比率"] == "N/A" else f"{float(r['夏普比率']):.4f}",
+            r["最大回撤"] if r["最大回撤"] == "N/A" else f"{float(r['最大回撤']):.2f}",
         ]
         table_data.append(row)
 
@@ -1238,13 +964,21 @@ if __name__ == "__main__":
             f"{best_params['使用ATR止损']}",
             f"{best_params['资金使用比例']:.2f}",
             f"{best_params['最终资金']:.2f}",
-            f"{best_params['年化收益率']:.2f}",
             (
-                f"{best_params['夏普比率']:.4f}"
-                if best_params["夏普比率"] is not None
-                else "N/A"
+                best_params["年化收益率"]
+                if best_params["年化收益率"] == "N/A"
+                else f"{float(best_params['年化收益率']):.2f}"
             ),
-            f"{best_params['最大回撤']:.2f}",
+            (
+                best_params["夏普比率"]
+                if best_params["夏普比率"] == "N/A"
+                else f"{float(best_params['夏普比率']):.4f}"
+            ),
+            (
+                best_params["最大回撤"]
+                if best_params["最大回撤"] == "N/A"
+                else f"{float(best_params['最大回撤']):.2f}"
+            ),
         ]
         logger.info("\n最佳参数组合（基于最高年化收益率）:")
         logger.info(
