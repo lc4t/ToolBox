@@ -146,16 +146,16 @@ class ETFStrategy(bt.Strategy):
             next_date = current_date
 
         # 输出每天的状态调试信息
-        if self.params.debug:
-            logger.debug(
-                f"\n日期: {current_date} 的状态:\n"
-                f"- 当前价格: {self.dataclose[0]:.3f}\n"
-                f"- 短期均线: MA{self.params.short_period}={self.sma_short[0]:.3f}\n"
-                f"- 长期均线: MA{self.params.long_period}={self.sma_long[0]:.3f}\n"
-                f"- 均线差值: {(self.sma_short[0] - self.sma_long[0]):.3f}\n"
-                f"- 均线交叉: {self.crossover[0]}\n"
-                f"- 当前持仓: {'有' if self.position else '无'}"
-            )
+        # if self.params.debug:
+        #     logger.debug(
+        #         f"\n日期: {current_date} 的状态:\n"
+        #         f"- 当前价格: {self.dataclose[0]:.3f}\n"
+        #         f"- 短期均线: MA{self.params.short_period}={self.sma_short[0]:.3f}\n"
+        #         f"- 长期均线: MA{self.params.long_period}={self.sma_long[0]:.3f}\n"
+        #         f"- 均线差值: {(self.sma_short[0] - self.sma_long[0]):.3f}\n"
+        #         f"- 均线交叉: {self.crossover[0]}\n"
+        #         f"- 当前持仓: {'有' if self.position else '无'}"
+        #     )
 
         # 检查信号生成条件
         if self.crossover > 0:
