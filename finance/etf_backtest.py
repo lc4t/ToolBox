@@ -65,6 +65,7 @@ class ETFStrategy(bt.Strategy):
         ("bbands_filter_mode", FilterMode.BOTH),  # 布林带过滤器模式
         ("trend_filter_mode", FilterMode.BOTH),  # 趋势过滤器模式
         ("signal_delay_mode", FilterMode.BOTH),  # 信号滞后模式
+        ("start_date", None),  # 添加回测开始日期参数
     )
 
     def __init__(self):
@@ -179,7 +180,7 @@ class ETFStrategy(bt.Strategy):
             "symbol": self.params.symbol,
             "name": get_etf_name(self.params.symbol),
             "date": current_date,
-            "start_date": self.data.datetime.date(0),
+            "start_date": self.params.start_date,  # 使用策略参数中的开始日期
             "price": self.dataclose[0],
             "sma_short": self.sma_short[0],
             "sma_long": self.sma_long[0],
@@ -846,7 +847,7 @@ def get_etf_data(symbol, start_date=None):
             logger.error(f"错误：{symbol} 的数据文件为空。")
             return None
 
-        # 将日期列转换为datetime索引，并移除区信息
+        # 将日期列转换datetime索引，并移区信息
         df["日期"] = pd.to_datetime(df["日期"]).dt.normalize()
         df = df.set_index("日期")
 
@@ -958,7 +959,6 @@ def run_backtest(
 
     cerebro.addstrategy(
         ETFStrategy,
-        symbol=symbol,  # 只传入代码，名称由策略内部获取
         short_period=short_period,
         long_period=long_period,
         stop_loss=stop_loss,
@@ -968,7 +968,9 @@ def run_backtest(
         cash_ratio=cash_ratio,
         enable_crossover_sell=enable_crossover_sell,
         debug=debug,
+        symbol=symbol,
         notifiers=notifiers or {},
+        start_date=start_date,  # 添加开始日期参数
         adx_period=adx_period,
         adx_threshold=adx_threshold,
         bbands_period=bbands_period,
