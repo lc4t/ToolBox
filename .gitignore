@@ -1,3 +1,50 @@
+# 环境变量文件
 .env
+*.csv
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# 虚拟环境
+venv/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 其他文件
 .DS_Store
 *.pyc
+poetry.lock
+zotero/Takeout
+*.log
+*.log.*
+*.zip
+
+
+# 日志文件目录
+logs/
+*.log
+*.log.*
+*.zip
+
