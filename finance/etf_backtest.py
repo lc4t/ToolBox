@@ -984,9 +984,19 @@ def run_backtest(
         signal_delay_mode=signal_delay_mode,  # 传递过滤器模式
     )
 
+    # 添加更多分析器
     cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name="sharpe")
     cerebro.addanalyzer(bt.analyzers.Returns, _name="returns")
     cerebro.addanalyzer(bt.analyzers.DrawDown, _name="drawdown")
+    cerebro.addanalyzer(bt.analyzers.TradeAnalyzer, _name="trades")  # 添加交易分析器
+    cerebro.addanalyzer(
+        bt.analyzers.TimeReturn, _name="time_return"
+    )  # 添加时间收益分析器
+    cerebro.addanalyzer(bt.analyzers.VWR, _name="vwr")  # 添加VWR分析器
+    cerebro.addanalyzer(bt.analyzers.SQN, _name="sqn")  # 添加SQN分析器
+    cerebro.addanalyzer(
+        bt.analyzers.TimeDrawDown, _name="time_drawdown"
+    )  # 添加时间回撤分析器
 
     results = cerebro.run()
     strat = results[0]
@@ -995,14 +1005,46 @@ def run_backtest(
     analysis = strat.analyzers.returns.get_analysis()
     sharpe = strat.analyzers.sharpe.get_analysis()
     drawdown = strat.analyzers.drawdown.get_analysis()
+    trades = strat.analyzers.trades.get_analysis()
+    vwr = strat.analyzers.vwr.get_analysis()
+    sqn = strat.analyzers.sqn.get_analysis()
+    time_drawdown = strat.analyzers.time_drawdown.get_analysis()
 
-    # 处理数据为None的情况，用0.0填充
-    sharpe = {key: 0.0 if value is None else value for key, value in sharpe.items()}
-    analysis = {key: 0.0 if value is None else value for key, value in analysis.items()}
-    drawdown = {
-        key: {"drawdown": 0.0} if value is None else value
-        for key, value in drawdown.items()
-    }
+    # 计算各项指标
+    total_trades = trades.total.closed if hasattr(trades, "total") else 0
+    won_trades = trades.won.total if hasattr(trades, "won") else 0
+    lost_trades = trades.lost.total if hasattr(trades, "lost") else 0
+    win_rate = won_trades / total_trades if total_trades > 0 else 0
+
+    # 计算盈亏比
+    avg_won = (
+        trades.won.pnl.average
+        if hasattr(trades, "won") and hasattr(trades.won, "pnl")
+        else 0
+    )
+    avg_lost = (
+        abs(trades.lost.pnl.average)
+        if hasattr(trades, "lost") and hasattr(trades.lost, "pnl")
+        else 0
+    )
+    profit_factor = avg_won / avg_lost if avg_lost != 0 else 0
+
+    # 计算Calmar比率
+    max_dd = drawdown.max.drawdown if hasattr(drawdown, "max") else 0
+    annual_return = analysis.get("rnorm100", 0)  # 年化收益率
+    calmar_ratio = abs(annual_return / max_dd) if max_dd != 0 else 0
+
+    # 获取当前回撤
+    current_dd = time_drawdown.get("drawdown", 0)
+
+    # 计算运行天数
+    start_date = pd.to_datetime(start_date)
+    end_date = pd.to_datetime(end_date)
+    running_days = (end_date - start_date).days
+
+    # 计算最新净值
+    final_value = cerebro.broker.getvalue()
+    nav = final_value / initial_cash
 
     # 生成交易记录表格
     trade_table = strat.get_trade_table()
@@ -1014,9 +1056,20 @@ def run_backtest(
     if hasattr(strat, "last_signal_data"):
         # 添加性能数据到信号详情
         performance_text = "\n\n策略表现:\n"
+        performance_text += f"- 建仓日期: {start_date.date()}\n"  # 添加建仓日期
         performance_text += f"- 夏普比率: {sharpe['sharperatio']:.4f}\n"
         performance_text += f"- 年化收益率: {analysis['rnorm100']:.2f}%\n"
-        performance_text += f"- 最大回撤: {drawdown['max']['drawdown']:.2f}%"
+        performance_text += f"- 最大回撤: {drawdown['max']['drawdown']:.2f}%\n"
+        # 添加新增指标
+        performance_text += f"- 胜率: {win_rate * 100:.2f}%\n"
+        performance_text += f"- 最新净值: {nav:.4f}\n"
+        performance_text += f"- 盈亏比: {profit_factor:.2f}\n"
+        performance_text += f"- 当前回撤: {current_dd:.2f}%\n"
+        performance_text += f"- Calmar比率: {calmar_ratio:.4f}\n"
+        performance_text += f"- SQN: {sqn.get('sqn', 0):.4f}\n"
+        performance_text += f"- VWR: {vwr.get('vwr', 0):.4f}\n"
+        performance_text += f"- 总交易次数: {total_trades}\n"
+        performance_text += f"- 运行天数: {running_days}"
 
         strat.last_signal_data["signal_details"] += performance_text
         strat.last_signal_data["trade_table"] = trade_table
@@ -1142,15 +1195,25 @@ def run_backtest(
     return {
         "短期均线": strat.params.short_period,
         "长期均线": strat.params.long_period,
-        "止损比例": stop_loss,  # 使用传入的参数值
+        "止损比例": stop_loss,
         "ATR周期": strat.params.atr_period,
         "ATR倍数": strat.params.atr_multiplier,
         "使用ATR止损": strat.params.use_atr_stop,
         "资金使用比例": strat.params.cash_ratio,
-        "最终资金": cerebro.broker.getvalue(),
-        "夏普比率": sharpe["sharperatio"],  # 直接使用原始数据
-        "年化收益率": analysis["rnorm100"],  # 直接使用原始数据
-        "最大回撤": drawdown["max"]["drawdown"],  # 直接使用原始数据
+        "最终资金": final_value,
+        "夏普比率": sharpe.get("sharperatio", 0),
+        "年化收益率": analysis.get("rnorm100", 0),
+        "最大回撤": drawdown.max.drawdown if hasattr(drawdown, "max") else 0,
+        # 新增指标
+        "胜率": win_rate * 100,  # 转换为百分比
+        "最新净值": nav,
+        "盈亏比": profit_factor,
+        "当前回撤": current_dd,
+        "Calmar比率": calmar_ratio,
+        "SQN": sqn.get("sqn", 0),
+        "VWR": vwr.get("vwr", 0),
+        "总交易次数": total_trades,
+        "运行天数": running_days,
     }
 
 
@@ -1530,6 +1593,15 @@ if __name__ == "__main__":
         "年化收益率",
         "夏普比率",
         "最大回撤",
+        "胜率",
+        "最新净值",
+        "盈亏比",
+        "当前回撤",
+        "Calmar比率",
+        "SQN",
+        "VWR",
+        "总交易次数",
+        "运行天数",
     ]
     table_data = []
     for r in sorted_results:
@@ -1542,13 +1614,18 @@ if __name__ == "__main__":
             f"{r['使用ATR止损']}",
             f"{r['资金使用比例']:.2f}",
             f"{r['最终资金']:.2f}",
-            (
-                r["年化收益率"]
-                if r["年化收益率"] == "N/A"
-                else f"{float(r['年化收益率']):.2f}"
-            ),
-            r["夏普比率"] if r["夏普比率"] == "N/A" else f"{float(r['夏普比率']):.4f}",
-            r["最大回撤"] if r["最大回撤"] == "N/A" else f"{float(r['最大回撤']):.2f}",
+            f"{r['年化收益率']:.2f}",
+            f"{r['夏普比率']:.4f}",
+            f"{r['最大回撤']:.2f}",
+            f"{r['胜率']:.2f}%",
+            f"{r['最新净值']:.4f}",
+            f"{r['盈亏比']:.2f}",
+            f"{r['当前回撤']:.2f}%",
+            f"{r['Calmar比率']:.4f}",
+            f"{r['SQN']:.4f}",
+            f"{r['VWR']:.4f}",
+            f"{r['总交易次数']}",
+            f"{r['运行天数']}",
         ]
         table_data.append(row)
 
@@ -1571,21 +1648,18 @@ if __name__ == "__main__":
             f"{best_params['使用ATR止损']}",
             f"{best_params['资金使用比例']:.2f}",
             f"{best_params['最终资金']:.2f}",
-            (
-                best_params["年化收益率"]
-                if best_params["年化收益率"] == "N/A"
-                else f"{float(best_params['年化收益率']):.2f}"
-            ),
-            (
-                best_params["夏普比率"]
-                if best_params["夏普比率"] == "N/A"
-                else f"{float(best_params['夏普比率']):.4f}"
-            ),
-            (
-                best_params["最大回撤"]
-                if best_params["最大回撤"] == "N/A"
-                else f"{float(best_params['最大回撤']):.2f}"
-            ),
+            f"{best_params['年化收益率']:.2f}",
+            f"{best_params['夏普比率']:.4f}",
+            f"{best_params['最大回撤']:.2f}",
+            f"{best_params['胜率']:.2f}%",
+            f"{best_params['最新净值']:.4f}",
+            f"{best_params['盈亏比']:.2f}",
+            f"{best_params['当前回撤']:.2f}%",
+            f"{best_params['Calmar比率']:.4f}",
+            f"{best_params['SQN']:.4f}",
+            f"{best_params['VWR']:.4f}",
+            f"{best_params['总交易次数']}",
+            f"{best_params['运行天数']}",
         ]
         logger.info("\n最佳参数组合（基于最高年化收益率）:")
         logger.info(

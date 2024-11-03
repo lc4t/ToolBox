@@ -67,7 +67,6 @@ def build_message(
     base_content = (
         f"ETF交易信号 - {signal_data['name']} ({signal_data['symbol']}) - {signal_data['signal_type']}\n\n"
         f"日期: {signal_data['date']}\n"
-        f"回测开始: {signal_data['start_date']}\n"
         f"当前价格: {signal_data['price']:.3f}\n\n"
         f"信号类型: {signal_data['signal_type']}\n\n"
         f"信号详情:\n{signal_data['signal_details']}\n\n"  # 这里已经包含了过滤器状态
@@ -247,6 +246,66 @@ def _to_html(base_content: str) -> str:
             margin: 15px 0;
         }
         .performance-item {
+            margin-bottom: 20px;
+            padding: 10px;
+            border-left: 3px solid #4CAF50;
+            background-color: #f9f9f9;
+        }
+        .performance-item .label {
+            font-weight: bold;
+            color: #333;
+            margin-bottom: 5px;
+        }
+        .performance-item .value {
+            color: #2196F3;
+            margin-bottom: 5px;
+        }
+        .performance-item .explanation {
+            color: #666;
+            font-size: 0.9em;
+            font-style: italic;
+            line-height: 1.4;
+        }
+        .performance-item .text {
+            color: #666;
+            font-size: 14px;
+            margin-bottom: 5px;
+        }
+        .trade-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 15px 0;
+            font-size: 14px;
+            background-color: #fff;
+        }
+        .trade-table th {
+            background-color: #1a73e8;
+            color: white;
+            padding: 12px;
+            text-align: left;
+            border: 1px solid #e0e0e0;
+        }
+        .trade-table td {
+            padding: 10px;
+            border: 1px solid #e0e0e0;
+            text-align: left;
+        }
+        .trade-table tr:nth-child(even) {
+            background-color: #f8f9fa;
+        }
+        .trade-table tr:hover {
+            background-color: #f5f5f5;
+        }
+        .trade-table .number {
+            text-align: right;
+        }
+        .performance {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+            margin: 15px 0;
+        }
+        .performance-item {
             background-color: #f8f9fa;
             padding: 15px;
             border-radius: 5px;
@@ -305,15 +364,35 @@ def _to_html(base_content: str) -> str:
             title, content = section.split(":", 1)
             metrics = content.strip().split("\n")
             metrics_html = '<div class="performance">'
+
+            # 定义指标解释
+            metric_explanations = {
+                "建仓日期": "策略开始运行的日期，从这一天开始进行交易",
+                "夏普比率": "衡量投资收益与风险的关系，数值越高表示单位风险下的收益越好，通常大于1即为良好",
+                "年化收益率": "将总收益率换算成年度收益率，便于与其他投资方式比较",
+                "最大回撤": "最大亏损幅度，从最高点到最低点的最大跌幅，反映策略的风险程度",
+                "胜率": "盈利交易在总交易中的比例，反映策略的成功率",
+                "最新净值": "当前投资组合的价值与初始投资的比值，反映总体收益情况",
+                "盈亏比": "平均盈利与平均亏损的比率，反映风险管理能力，通常大于1.5较好",
+                "当前回撤": "当前投资组合的亏损幅度，从最近峰值到当前值的下降比率",
+                "Calmar比率": "年化收益率与最大回撤的比值，反映策略的风险调整后收益能力，越高越好",
+                "SQN": "系统质量指数，综合考虑收益、风险和交易频率，通常大于2为良好",
+                "VWR": "波动率加权回报，考虑波动率后的收益率指标，更好地反映风险调整后的收益",
+                "总交易次数": "策略执行的总交易次数，反映交易频率",
+                "运行天数": "策略运行的总天数，用于评估策略的测试时长",
+            }
+
             for metric in metrics:
                 if metric.strip():
                     # 检查是否是有效的指标行
                     if ": " in metric:
                         label, value = metric.replace("- ", "").split(": ", 1)
+                        explanation = metric_explanations.get(label, "")
                         metrics_html += f"""
                             <div class="performance-item">
                                 <div class="label">{label}</div>
                                 <div class="value">{value}</div>
+                                <div class="explanation">{explanation}</div>
                             </div>
                         """
                     else:
