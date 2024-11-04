@@ -143,7 +143,9 @@ class ETFStrategy(bt.Strategy):
         current_date = self.data.datetime.date(0)
         try:
             next_date = self.data.datetime.date(1)
+            has_next_bar = True
         except IndexError:
+            has_next_bar = False
             next_date = current_date
 
         # 输出每天的状态调试信息
@@ -362,14 +364,23 @@ class ETFStrategy(bt.Strategy):
                             size = int(available_cash / self.dataclose[0])
 
                             # 执行买入操作
-                            if size > 0:
-                                self.order = self.buy(size=size)
-                                logger.info(
-                                    f"买入信号 - 日期: {current_date}, "
-                                    f"价格: {self.dataclose[0]:.2f}, "
-                                    f"数量: {size}, "
-                                    f"金额: {size * self.dataclose[0]:.2f}"
-                                )
+                            if size > 0:  # 可以买入
+                                if has_next_bar:  # 只有在有下一个交易日时才执行买入
+                                    self.order = self.buy(
+                                        size=size,
+                                        exectype=bt.Order.Market,  # 使用市价单
+                                        valid=next_date,  # 使用已经检查过的next_date
+                                    )
+                                    logger.info(
+                                        f"买入信号 - 日期: {current_date}, "
+                                        f"价格: {self.dataclose[0]:.2f}, "
+                                        f"数量: {size}, "
+                                        f"金额: {size * self.dataclose[0]:.2f}"
+                                    )
+                                else:
+                                    logger.info(
+                                        f"跳过买入信号 - 日期: {current_date} (已到最后交易日)"
+                                    )
                             # 重置信号等待计数
                             self.pending_buy_signal = 0
                             return
@@ -411,15 +422,23 @@ class ETFStrategy(bt.Strategy):
                             if self.params.debug:
                                 logger.debug("卖出信号确认，将执行卖出操作")
                             # 执行卖出操作
-                            self.order = self.sell(size=self.position.size)
-                            # 设置卖出原因，供 notify_order 使用
-                            self.order.sell_reason = sell_reason
-                            logger.info(
-                                f"卖出信号 - 日期: {current_date}, "
-                                f"价格: {self.dataclose[0]:.2f}, "
-                                f"数量: {self.position.size}, "
-                                f"原因: {sell_reason}"
-                            )
+                            if has_next_bar:  # 只有在有下一个交易日时才执行卖出
+                                self.order = self.sell(
+                                    size=self.position.size,
+                                    exectype=bt.Order.Market,  # 使用市价单
+                                    valid=next_date,  # 使用已经检查过的next_date
+                                )
+                                self.order.sell_reason = sell_reason
+                                logger.info(
+                                    f"卖出信号 - 日期: {current_date}, "
+                                    f"价格: {self.dataclose[0]:.2f}, "
+                                    f"数量: {self.position.size}, "
+                                    f"原因: {sell_reason}"
+                                )
+                            else:
+                                logger.info(
+                                    f"跳过卖出信号 - 日期: {current_date} (已到最后交易日)"
+                                )
                             # 重置信号等待计数
                             self.pending_sell_signal = 0
                             return
@@ -522,13 +541,22 @@ class ETFStrategy(bt.Strategy):
 
                 if size > 0:  # 可以买入
                     # 执行买入操作
-                    self.order = self.buy(size=size)
-                    logger.info(
-                        f"买入信号 - 日期: {current_date}, "
-                        f"价格: {self.dataclose[0]:.2f}, "
-                        f"数量: {size}, "
-                        f"金额: {size * self.dataclose[0]:.2f}"
-                    )
+                    if has_next_bar:  # 只有在有下一个交易日时才执行买入
+                        self.order = self.buy(
+                            size=size,
+                            exectype=bt.Order.Market,  # 使用市价单
+                            valid=next_date,  # 使用已经检查过的next_date
+                        )
+                        logger.info(
+                            f"买入信号 - 日期: {current_date}, "
+                            f"价格: {self.dataclose[0]:.2f}, "
+                            f"数量: {size}, "
+                            f"金额: {size * self.dataclose[0]:.2f}"
+                        )
+                    else:
+                        logger.info(
+                            f"跳过买入信号 - 日期: {current_date} (已到最后交易日)"
+                        )
                     self.last_signal_date = current_date
                 else:
                     logger.debug(
@@ -575,6 +603,27 @@ class ETFStrategy(bt.Strategy):
 
             # 处理卖出信号
             if sell_signal:
+                # 更新信号数据
+                signal_data.update(
+                    {
+                        "signal_type": "卖出",
+                        "signal_details": (
+                            f"卖出信号指标:\n"
+                            f"- 短期均线: MA{self.params.short_period} = {self.sma_short[0]:.3f}\n"
+                            f"- 长期均线: MA{self.params.long_period} = {self.sma_long[0]:.3f}\n"
+                            f"- 均线差值: {(self.sma_short[0] - self.sma_long[0]):.3f}\n"
+                            f"- ATR指标: {self.atr[0]:.3f}\n"
+                            f"- 卖出价格: {self.dataclose[0]:.3f}\n"
+                            f"- 卖出原因: {sell_reason}\n"
+                            f"{'(已到最后交易日，无法执行)' if not has_next_bar else ''}"
+                        ),
+                        # 移除 position_details，因为持仓信息会在后面添加
+                        "signal_description": f"{sell_reason}，产生卖出信号",
+                    }
+                )
+                self.last_signal_data = signal_data
+                self.last_holding_data = holding_data
+
                 # 处理信号滞后
                 if self.params.signal_delay > 0:
                     if self.params.signal_delay_mode == FilterMode.BOTH:
@@ -584,16 +633,21 @@ class ETFStrategy(bt.Strategy):
                         self.pending_sell_signal = 0
 
                 # 执行卖出操作
-                self.order = self.sell(size=self.position.size)
-                # 设置卖出原因，供 notify_order 使用
-                self.order.sell_reason = sell_reason
-
-                logger.info(
-                    f"卖出信号 - 日期: {current_date}, "
-                    f"价格: {self.dataclose[0]:.2f}, "
-                    f"数量: {self.position.size}, "
-                    f"原因: {sell_reason}"
-                )
+                if has_next_bar:  # 只有在有下一个交易日时才执行卖出
+                    self.order = self.sell(
+                        size=self.position.size,
+                        exectype=bt.Order.Market,  # 使用市价单
+                        valid=next_date,  # 使用已经检查过的next_date
+                    )
+                    self.order.sell_reason = sell_reason
+                    logger.info(
+                        f"卖出信号 - 日期: {current_date}, "
+                        f"价格: {self.dataclose[0]:.2f}, "
+                        f"数量: {self.position.size}, "
+                        f"原因: {sell_reason}"
+                    )
+                else:
+                    logger.info(f"跳过卖出信号 - 日期: {current_date} (已到最后交易日)")
 
                 # 重置信号等待计数
                 self.pending_sell_signal = 0
@@ -606,19 +660,18 @@ class ETFStrategy(bt.Strategy):
             current_value = position_size * current_price  # 当前市值
             profit_rate = (current_value / buy_value - 1) * 100  # 收益率(%)
 
-            position_info = (
-                "\n\n当前持仓信息："
-                f"\n买入时间：{self.buy_date.strftime('%Y-%m-%d')}"
-                f"\n买入价格：{self.buyprice:.3f}"
-                f"\n买入数量：{position_size:,d}"
-                f"\n买入金额：{buy_value:,.2f}"
-                f"\n当前价格：{current_price:.3f}"
-                f"\n当前市值：{current_value:,.2f}"
-                f"\n当前收益：{profit_rate:+.2f}%"  # 添加+号显示正负
-                f"\n最高价格：{self.highest_price:.3f}"
+            # 更新 signal_data 中的持仓状态
+            signal_data["position_details"] = (
+                f"当前持仓\n"
+                f"- 买入时间：{self.buy_date.strftime('%Y-%m-%d')}\n"
+                f"- 买入价格：{self.buyprice:.3f}\n"
+                f"- 买入数量：{position_size:,d}\n"
+                f"- 买入金额：{buy_value:,.2f}\n"
+                f"- 当前价格：{current_price:.3f}\n"
+                f"- 当前市值：{current_value:,.2f}\n"
+                f"- 当前收益：{profit_rate:+.2f}%\n"  # 添加+号显示正负
+                f"- 最高价格：{self.highest_price:.3f}"
             )
-            signal_data["signal_details"] += position_info
-
 
     def notify_order(self, order):
         if self.params.debug:
@@ -637,23 +690,25 @@ class ETFStrategy(bt.Strategy):
                 self.trades.append(
                     {
                         "类型": "买入",
-                        "日期": self.data.datetime.date(0),
+                        "信号日期": self.data.datetime.date(-1),  # 记录信号日期
+                        "执行日期": self.data.datetime.date(0),  # 记录实际执行日期
                         "价格": order.executed.price,
                         "数量": order.executed.size,
                         "消耗资金": order.executed.value,
                         "手续费": order.executed.comm,
-                        "收益": 0.0,  # 买入时收益为0
+                        "收益": 0.0,
                         "剩余资金": self.broker.getcash(),
-                        "指标条件": f"MA{self.params.short_period}({self.sma_short[0]:.3f}) > MA{self.params.long_period}({self.sma_long[0]:.3f})",
+                        "指标条件": f"MA{self.params.short_period}({self.sma_short[-1]:.3f}) > MA{self.params.long_period}({self.sma_long[-1]:.3f})",
                     }
                 )
 
                 logger.info(
-                    f"Buy executed - Date: {self.data.datetime.date(0)}, "
-                    f"Price: {order.executed.price:.2f}, "
-                    f"Size: {order.executed.size}, "
-                    f"Cost: {order.executed.value:.2f}, "
-                    f"Commission: {order.executed.comm:.2f}"
+                    f"买入执行完成 - 信号日期: {self.data.datetime.date(-1)}, "
+                    f"执行日期: {self.data.datetime.date(0)}, "
+                    f"开盘价: {order.executed.price:.2f}, "
+                    f"数量: {order.executed.size}, "
+                    f"总金额: {order.executed.value:.2f}, "
+                    f"手续费: {order.executed.comm:.2f}"
                 )
             else:  # 卖出时
                 # 计算卖出收益（需要考虑买入和卖出的总手续费）
@@ -663,8 +718,8 @@ class ETFStrategy(bt.Strategy):
                     order.executed.comm + self.buycomm
                 )  # 买入和卖出的总手续费
                 profit = round(
-                    buy_value - sell_value - total_commission, 4
-                )  # 收益 = 卖出价值 - 买入价值 - 总手续费
+                    sell_value - buy_value - total_commission, 4
+                )  # 修正收益计算公式：卖出价值 - 买入价值 - 总手续费
 
                 # 获取实际的止损价格和指标条件
                 if getattr(order, "sell_reason", "") == "触发止损":
@@ -690,13 +745,14 @@ class ETFStrategy(bt.Strategy):
                 else:
                     indicator_condition = "未知条件"
 
-                # 记录卖出交易（只记录卖出时的手续费）
+                # 记录卖出交易（统一使用信号日期和执行日期）
                 self.trades.append(
                     {
                         "类型": "卖出",
-                        "日期": self.data.datetime.date(0),
+                        "信号日期": self.data.datetime.date(-1),  # 记录信号日期
+                        "执行日期": self.data.datetime.date(0),  # 记录实际执行日期
                         "价格": order.executed.price,
-                        "数量": -order.executed.size,
+                        "数量": -order.executed.size,  # 使用负数表示卖出
                         "消耗资金": sell_value,
                         "手续费": order.executed.comm,  # 只记录卖出时的手续费
                         "收益": profit,
@@ -706,16 +762,15 @@ class ETFStrategy(bt.Strategy):
                 )
 
                 logger.info(
-                    f"卖出执行完成 - 日期: {self.data.datetime.date(0)}, "
+                    f"卖出执行完成 - 信号日期: {self.data.datetime.date(-1)}, "
+                    f"执行日期: {self.data.datetime.date(0)}, "
                     f"价格: {order.executed.price:.2f}, "
                     f"数量: {order.executed.size}, "
-                    f"收益: {profit:.2f}, "  # 修改这里：取负号
+                    f"收益: {profit:.2f}, "
                     f"原因: {getattr(order, 'sell_reason', '未知原因')}"
                 )
 
                 # 重置相关变量
-                self.highest_price = 0
-                self.buy_date = None
                 self.buyprice = None
                 self.buycomm = None
 
@@ -742,14 +797,15 @@ class ETFStrategy(bt.Strategy):
 
         headers = [
             "类型",
-            "日期",
+            "信号日期",  # 修改为使用信号日期
+            "执行日期",  # 添加执行日期
             "价格",
             "数量",
             "消耗资金",
             "手续费",
             "收益",
             "剩余资金",
-            "资产总值",  # 新增列
+            "总资产",  # 添加总资产列
             "指标条件",
         ]
         table_data = []
@@ -760,15 +816,16 @@ class ETFStrategy(bt.Strategy):
                 table_data.append(
                     [
                         trade["类型"],
-                        str(trade["日期"]),
+                        str(trade["信号日期"]),  # 使用信号日期
+                        str(trade["执行日期"]),  # 使用执行日期
                         f"{trade['价格']:.3f}",
                         f"{trade['数量']:.0f}",
                         f"{trade['消耗资金']:.2f}",
                         f"{trade['手续费']:.2f}",
-                        "-",
+                        f"{trade['收益']:.2f}",
                         f"{trade['剩余资金']:.2f}",
-                        f"{total_value:.2f}",  # 新增资产总值
-                        trade["指标条件"],  # 买入时的指标条件
+                        f"{total_value:.2f}",  # 添加总资产
+                        trade["指标条件"],
                     ]
                 )
             else:  # 卖出
@@ -777,15 +834,16 @@ class ETFStrategy(bt.Strategy):
                 table_data.append(
                     [
                         trade["类型"],
-                        str(trade["日期"]),
+                        str(trade["信号日期"]),  # 使用信号日期
+                        str(trade["执行日期"]),  # 使用执行日期
                         f"{trade['价格']:.3f}",
                         f"{trade['数量']:.0f}",
                         f"{trade['消耗资金']:.2f}",
                         f"{trade['手续费']:.2f}",
                         f"{trade['收益']:.2f}",
                         f"{trade['剩余资金']:.2f}",
-                        f"{total_value:.2f}",  # 新增资产总值
-                        trade["指标条件"],  # 卖出时的指标条件
+                        f"{total_value:.2f}",  # 添加总资产
+                        trade["指标条件"],
                     ]
                 )
 
@@ -795,14 +853,15 @@ class ETFStrategy(bt.Strategy):
             tablefmt="grid",
             colalign=(
                 "left",  # 类型
-                "left",  # 日期
+                "center",  # 信号日期
+                "center",  # 执行日期
                 "right",  # 价格
                 "right",  # 数量
                 "right",  # 消耗资金
                 "right",  # 手续费
                 "right",  # 收益
                 "right",  # 剩余资金
-                "right",  # 资产总值
+                "right",  # 总资产
                 "left",  # 指标条件
             ),
         )
