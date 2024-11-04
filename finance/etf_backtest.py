@@ -822,29 +822,45 @@ def get_etf_data(symbol, start_date=None, end_date=None):
                 .replace(hour=23, minute=59, second=59)
             )
 
-        # 第一次尝试：正常获取数据
-        df = _get_and_check_data(symbol, start_date, end_date)
-        if df is None or (start_date and df.index.min() > start_date):
-            # 数据获取失败或数据不足，尝试强制更新
-            logger.warning("首次获取数据失败或数据不足，尝试强制更新数据...")
+        # 检查是否需要更新数据
+        need_update = True
+        if os.path.exists(csv_file):
+            df = pd.read_csv(csv_file)
+            if not df.empty:
+                latest_date = pd.to_datetime(df["日期"]).max()
+                today = pd.Timestamp.now().normalize()
+
+                # 如果最新数据不是今天或昨天的，就需要更新
+                if latest_date.normalize() < (today - pd.Timedelta(days=1)):
+                    logger.info(
+                        f"数据不是最新的 (最新: {latest_date.date()}, 当前: {today.date()}), 需要更新"
+                    )
+                else:
+                    need_update = False
+                    logger.debug(
+                        f"数据是最新的 (最新: {latest_date.date()}, 当前: {today.date()})"
+                    )
+
+        if need_update:
+            # 获取新数据
+            logger.info("开始获取新数据...")
             new_data = get_and_save_etf_data(
                 symbol,
-                start_date=start_date,  # 修改这里：传入实际的start_date而不是None
+                start_date=start_date,
                 end_date=end_date,
             )
             if new_data is not None:
                 # 重新读取并检查数据
                 df = _get_and_check_data(symbol, start_date, end_date)
-                if df is None or (start_date and df.index.min() > start_date):
-                    logger.error(
-                        f"即使在强制更新后，数据仍然不足以进行回测 "
-                        f"(需要: {start_date.date() if start_date else 'None'}, "
-                        f"实际: {df.index.min().date() if df is not None else 'None'})"
-                    )
+                if df is None:
+                    logger.error("更新数据后读取失败")
                     return None
             else:
-                logger.error("强制更新数据失败")
+                logger.error("获取新数据失败")
                 return None
+        else:
+            # 使用现有数据
+            df = _get_and_check_data(symbol, start_date, end_date)
 
         return df
 

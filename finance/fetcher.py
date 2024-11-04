@@ -34,11 +34,9 @@ def get_and_save_etf_data(
 
     csv_file = os.path.join(downloads_dir, f"etf_data_{symbol}.csv")
 
-    # 确保输入的日期是无时区的
+    # 标准化日期格式
     if start_date:
-        start_date = pd.to_datetime(start_date)
-        if start_date.tzinfo is not None:
-            start_date = start_date.tz_localize(None)
+        start_date = pd.to_datetime(start_date).normalize()
     if end_date:
         # 确保end_date包含当前时分秒
         current_time = datetime.now()
@@ -47,8 +45,33 @@ def get_and_save_etf_data(
             minute=current_time.minute,
             second=current_time.second,
         )
-        if end_date.tzinfo is not None:
-            end_date = end_date.tz_localize(None)
+    if end_date.tzinfo is not None:
+        end_date = end_date.tz_localize(None)
+
+    # 检查是否需要更新数据
+    need_update = True
+    if os.path.exists(csv_file):
+        df = pd.read_csv(csv_file)
+        if not df.empty:
+            latest_date = pd.to_datetime(df["日期"]).max()
+            today = pd.Timestamp.now().normalize()
+            current_hour = datetime.now().hour
+
+            # 如果当前时间在15:00前，就用昨天的日期作为比较基准
+            if current_hour < 15:
+                today = today - pd.Timedelta(days=1)
+                logger.debug(f"当前时间在15:00前，使用昨天({today.date()})作为比较基准")
+
+            # 如果最新数据不是今天或昨天的，就需要更新
+            if latest_date.normalize() < today:
+                logger.info(
+                    f"数据不是最新的 (最新: {latest_date.date()}, 当前: {today.date()}), 需要更新"
+                )
+            else:
+                need_update = False
+                logger.debug(
+                    f"数据是最新的 (最新: {latest_date.date()}, 当前: {today.date()})"
+                )
 
     force_update = False
     existing_data = None
@@ -81,8 +104,24 @@ def get_and_save_etf_data(
         ticker = yf.Ticker(yf_symbol)
         logger.debug(f"创建Ticker对象: {yf_symbol}")
 
-        # 总是从2010年开始获取数据，确保数据足够早
-        fetch_start = pd.to_datetime("2010-01-01").tz_localize(None)
+        # 获取ETF的基本信息
+        info = ticker.info
+        logger.debug(f"获取到ETF基本信息: {info}")
+
+        # 从info中获取开始时间，如果没有则使用默认值
+        if start_date:
+            fetch_start = pd.to_datetime(start_date) - pd.Timedelta(days=30)
+        else:
+            # 尝试从info中获取开始时间
+            if info and "startDate" in info:
+                fetch_start = pd.to_datetime(info["startDate"], unit="s")
+                logger.debug(f"使用ETF上市日期作为开始时间: {fetch_start.date()}")
+            else:
+                # 如果没有提供start_date且无法获取上市日期，使用一个较早的日期
+                fetch_start = pd.to_datetime("2010-01-01")
+                logger.debug(f"无法获取ETF上市日期，使用默认日期: {fetch_start.date()}")
+
+        fetch_start = fetch_start.tz_localize(None)
         logger.debug(
             f"API调用参数:\n"
             f"- start: {fetch_start}\n"
@@ -161,6 +200,7 @@ def process_data(data: pd.DataFrame, ticker: yf.Ticker) -> pd.DataFrame:
 
     # 获取ETF的基本信息
     info = ticker.info
+    logger.info(f"获取到ETF基本信息: {info}")
     shares_outstanding = info.get("sharesOutstanding", 0)
 
     # 重命名列
