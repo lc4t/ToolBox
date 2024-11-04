@@ -786,11 +786,8 @@ class ETFStrategy(bt.Strategy):
         )
 
 
-# 获取ETF数据
-def get_etf_data(symbol, start_date=None):
-    """
-    获取ETF数据，总是获取全部历史数据，start_date 只用于回测过滤
-    """
+def get_etf_data(symbol, start_date=None, end_date=None):
+    """获取ETF数据，根据需要更新数据"""
     # 添加市场后缀处理
     if not symbol.endswith((".SZ", ".SS", ".BJ")):
         if symbol.startswith(("15", "16", "18")):  # 深交所ETF
@@ -811,83 +808,92 @@ def get_etf_data(symbol, start_date=None):
     downloads_dir = os.path.join(script_dir, "downloads")
     os.makedirs(downloads_dir, exist_ok=True)
 
-    # 使用完整的代码（包含后缀）作为文件名
     csv_file = os.path.join(downloads_dir, f"etf_data_{symbol}.csv")
 
     try:
-        need_update = False
-        if os.path.exists(csv_file):
-            # 检查现有数据是否是最新的
-            existing_data = pd.read_csv(csv_file, encoding="utf-8")
-            existing_data["日期"] = pd.to_datetime(existing_data["日期"]).dt.normalize()
-            latest_date = existing_data["日期"].max()
-
-            # 如果最新数不是昨天或更新，则需更新
-            yesterday = pd.Timestamp.now().normalize() - pd.Timedelta(days=1)
-            if latest_date.date() < yesterday.date():
-                need_update = True
-                logger.info(
-                    f"数据不是最新的（最新日期：{latest_date.date()}），需要更新"
-                )
-        else:
-            need_update = True
-            logger.info("数据文件不存在，需要获取数据")
-
-        if need_update:
-            # 使用带市场后缀的代码获取数据
-            get_and_save_etf_data(
-                symbol,  # 使用带市场后缀的代码
-                "2000-01-01",  # 总是获取足够长的历史数据
-                datetime.now().strftime("%Y-%m-%d"),
-            )
-
-        # 读取数据文件
-        df = pd.read_csv(csv_file, encoding="utf-8")
-        if df.empty:
-            logger.error(f"错误：{symbol} 的数据文件为空。")
-            return None
-
-        # 将日期列转换datetime索引，并移区信息
-        df["日期"] = pd.to_datetime(df["日期"]).dt.normalize()
-        df = df.set_index("日期")
-
-        # 重命名列
-        df = df.rename(
-            columns={
-                "开盘": "open",
-                "最高": "high",
-                "最低": "low",
-                "收盘": "close",
-                "成交量": "volume",
-            }
-        )
-        df = df.sort_index()  # 确保数据按日期排序
-        logger.info(f"数据范围：{df.index.min().date()} 到 {df.index.max().date()}")
-
-        # 确保所有数据列都是数值类型
-        numeric_columns = ["open", "high", "low", "close", "volume"]
-        for col in numeric_columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-
-        # 添加ETF名称
-        df.name = etf_name
-
-        # 如果指定了回测开始日期，则过滤数据
+        # 标准化日期格式
         if start_date:
             start_date = pd.to_datetime(start_date).normalize()
-            df = df[df.index >= start_date]
-            logger.info(
-                f"回测数据范围：{df.index.min().date()} 到 {df.index.max().date()}"
+        if end_date:
+            # 确保end_date是当天的23:59:59
+            end_date = (
+                pd.to_datetime(end_date)
+                .normalize()
+                .replace(hour=23, minute=59, second=59)
             )
 
-        # 打印数据的日期范围
-        logger.debug(f"数据的日期范围：{df.index.min()} 到 {df.index.max()}")
+        # 第一次尝试：正常获取数据
+        df = _get_and_check_data(symbol, start_date, end_date)
+        if df is None or (start_date and df.index.min() > start_date):
+            # 数据获取失败或数据不足，尝试强制更新
+            logger.warning("首次获取数据失败或数据不足，尝试强制更新数据...")
+            new_data = get_and_save_etf_data(
+                symbol,
+                start_date=start_date,  # 修改这里：传入实际的start_date而不是None
+                end_date=end_date,
+            )
+            if new_data is not None:
+                # 重新读取并检查数据
+                df = _get_and_check_data(symbol, start_date, end_date)
+                if df is None or (start_date and df.index.min() > start_date):
+                    logger.error(
+                        f"即使在强制更新后，数据仍然不足以进行回测 "
+                        f"(需要: {start_date.date() if start_date else 'None'}, "
+                        f"实际: {df.index.min().date() if df is not None else 'None'})"
+                    )
+                    return None
+            else:
+                logger.error("强制更新数据失败")
+                return None
 
-        return df[numeric_columns]  # 只返回数值列
+        return df
 
     except Exception as e:
         logger.error(f"处理 {symbol} 数据出错: {e}")
         return None
+
+
+def _get_and_check_data(symbol, start_date=None, end_date=None):
+    """内部函数：获取并检查数据"""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    downloads_dir = os.path.join(script_dir, "downloads")
+    csv_file = os.path.join(downloads_dir, f"etf_data_{symbol}.csv")
+
+    if not os.path.exists(csv_file):
+        return None
+
+    # 读取数据文件
+    df = pd.read_csv(csv_file, encoding="utf-8")
+    if df.empty:
+        return None
+
+    # 转换日期并排序
+    df["日期"] = pd.to_datetime(df["日期"]).dt.normalize()
+    df = df.sort_values("日期")  # 确保数据按日期排序
+    df = df.set_index("日期")
+
+    # 准备回测所需的数据列
+    df["价格"] = df["收盘"]
+    df["数量"] = df["成交量"]
+    df["消耗资金"] = 0
+    df["手续费"] = 0
+    df["收益"] = 0
+
+    # 返回所有需要的列
+    return df[
+        [
+            "开盘",
+            "最高",
+            "最低",
+            "收盘",
+            "成交量",
+            "价格",
+            "数量",
+            "消耗资金",
+            "手续费",
+            "收益",
+        ]
+    ]
 
 
 # 主函数
@@ -924,8 +930,8 @@ def run_backtest(
     start_date = pd.to_datetime(start_date).tz_localize(None)
     end_date = pd.to_datetime(end_date).tz_localize(None)
 
-    # 获取完整的历史数据
-    data = get_etf_data(symbol)  # 不传入 start_date，获取全部历史数据
+    # 获取完整的历史数据，传入start_date以确保获取足够的历史数据
+    data = get_etf_data(symbol, start_date=start_date, end_date=end_date)
     if data is None:
         return None
 
@@ -939,16 +945,16 @@ def run_backtest(
     # 创建 PandasData feed，使用完整数据集，通过 fromdate 和 todate 控制回测区间
     feed = bt.feeds.PandasData(
         dataname=data,
-        datetime=None,  # 使用引作日期
-        open="open",
-        high="high",
-        low="low",
-        close="close",
-        volume="volume",
-        openinterest=-1,  # 不使用持仓量
-        fromdate=start_date,  # 设置实际回测开始日期
-        todate=end_date,  # 设置回测结束日期
-        plot=False,  # 禁用绘图
+        datetime=None,  # 使用索引作为日期
+        open="开盘",  # 使用列名而不是Series
+        high="最高",
+        low="最低",
+        close="价格",  # 使用我们设置的"价格"列
+        volume="数量",  # 使用我们设置的"数量"列
+        openinterest=-1,
+        fromdate=start_date,
+        todate=end_date,
+        plot=False,
     )
 
     # 添加数据到cerebro
