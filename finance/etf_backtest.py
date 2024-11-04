@@ -598,6 +598,28 @@ class ETFStrategy(bt.Strategy):
                 # 重置信号等待计数
                 self.pending_sell_signal = 0
 
+        # 如果有持仓，添加持仓信息
+        if self.position and self.position.size > 0:
+            current_price = self.dataclose[0]
+            position_size = self.position.size
+            buy_value = self.buyprice * position_size  # 买入总金额
+            current_value = position_size * current_price  # 当前市值
+            profit_rate = (current_value / buy_value - 1) * 100  # 收益率(%)
+
+            position_info = (
+                "\n\n当前持仓信息："
+                f"\n买入时间：{self.buy_date.strftime('%Y-%m-%d')}"
+                f"\n买入价格：{self.buyprice:.3f}"
+                f"\n买入数量：{position_size:,d}"
+                f"\n买入金额：{buy_value:,.2f}"
+                f"\n当前价格：{current_price:.3f}"
+                f"\n当前市值：{current_value:,.2f}"
+                f"\n当前收益：{profit_rate:+.2f}%"  # 添加+号显示正负
+                f"\n最高价格：{self.highest_price:.3f}"
+            )
+            signal_data["signal_details"] += position_info
+
+
     def notify_order(self, order):
         if self.params.debug:
             if order.status in [order.Submitted, order.Accepted]:
