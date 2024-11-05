@@ -712,9 +712,9 @@ class ETFStrategy(bt.Strategy):
                 )
             else:  # 卖出时
                 # 计算卖出收益（需要考虑买入和卖出的总手续费）
-                sell_value = order.executed.price * order.executed.size
-                buy_value = self.buyprice * order.executed.size
-                total_commission = (
+                sell_value = abs(order.executed.price * order.executed.size)
+                buy_value = abs(self.buyprice * order.executed.size)
+                total_commission = abs(
                     order.executed.comm + self.buycomm
                 )  # 买入和卖出的总手续费
                 profit = round(
