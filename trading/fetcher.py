@@ -1,16 +1,19 @@
-from abc import ABC, abstractmethod
+from datetime import datetime, timedelta
+from typing import List, Optional, Any, Dict, Union
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from argparse import ArgumentParser
-from datetime import datetime
-from typing import Any, Dict, List, Type, Union
-
-import yfinance as yf
-from db import DBClient
+from abc import ABC, abstractmethod
+from tqdm import tqdm
+import tenacity
 from loguru import logger
+import yfinance as yf
+
+from db import DBClient
+import argparse
 
 
 class DataFetcher(ABC):
     """数据获取基类"""
-
     @abstractmethod
     def fetch_data(
         self,
@@ -24,7 +27,6 @@ class DataFetcher(ABC):
 
 class YFinanceFetcher(DataFetcher):
     """YFinance数据获取实现"""
-
     def fetch_data(
         self,
         symbol: str,
@@ -52,160 +54,128 @@ class YFinanceFetcher(DataFetcher):
             return []
 
 
-class DataFetcherFactory:
-    """数据获取工厂类"""
-
-    _fetchers: Dict[str, Type[DataFetcher]] = {
-        "yfinance": YFinanceFetcher,
-    }
-
-    @classmethod
-    def get_fetcher(cls, source: str = "yfinance") -> DataFetcher:
-        fetcher_class = cls._fetchers.get(source)
-        if not fetcher_class:
-            raise ValueError(f"Unsupported data source: {source}")
-        return fetcher_class()
-
-    @classmethod
-    def register_fetcher(cls, name: str, fetcher_class: Type[DataFetcher]) -> None:
-        """注册新的数据源实现"""
-        cls._fetchers[name] = fetcher_class
-
-
 class StockDataManager:
-    """股票数据管理类"""
+    def __init__(self, max_workers: int = 5, max_retries: int = 3):
+        self.db_client = DBClient()
+        self.max_workers = max_workers
+        self.max_retries = max_retries
+        self.yfinance_fetcher = YFinanceFetcher()
 
-    def __init__(
-        self,
-        db_client: DBClient,
-        fetcher_source: str = "yfinance",
-    ):
-        self.db_client = db_client
-        self.fetcher = DataFetcherFactory.get_fetcher(fetcher_source)
-
-    def _get_valid_start_date(
-        self, symbol: str, requested_start: Union[str, datetime]
-    ) -> datetime:
-        """获取有效的开始日期（不早于上市日期）"""
-        symbol_info = self.db_client.get_symbol_info(symbol)
-        if not symbol_info:
-            logger.warning(
-                f"No symbol info found for {symbol}, using requested start date"
-            )
-            return (
-                requested_start
-                if isinstance(requested_start, datetime)
-                else datetime.strptime(requested_start, "%Y-%m-%d")
-            )
-
-        listing_date = symbol_info["listing_date"]
-        if not listing_date:
-            logger.warning(
-                f"No listing date found for {symbol}, using requested start date"
-            )
-            return (
-                requested_start
-                if isinstance(requested_start, datetime)
-                else datetime.strptime(requested_start, "%Y-%m-%d")
-            )
-
-        requested_date = (
-            requested_start
-            if isinstance(requested_start, datetime)
-            else datetime.strptime(requested_start, "%Y-%m-%d")
+    @tenacity.retry(
+        stop=tenacity.stop_after_attempt(3),
+        wait=tenacity.wait_exponential(multiplier=1, min=4, max=10),
+        retry=tenacity.retry_if_exception_type(Exception),
+        before_sleep=lambda retry_state: logger.warning(
+            f"Retrying {retry_state.attempt_number}/3 after error: {retry_state.outcome.exception()}"
         )
-        return max(listing_date, requested_date)
-
-    def update_stock_data(
+    )
+    def _fetch_single_stock_data(
         self,
         symbol: str,
-        start_date: Union[str, datetime],
-        end_date: Union[str, datetime],
-        upsert: bool = False,
+        start_date: datetime,
+        end_date: datetime
+    ) -> List[Dict[str, Any]]:
+        """获取单个股票的据，带重试机制"""
+        return self.yfinance_fetcher.fetch_data(symbol, start_date, end_date)
+
+    def fetch_data(
+        self,
+        symbol: Optional[str] = None,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None
     ) -> bool:
-        """更新股票数据，已存在的数据会被跳过"""
-        try:
-            # 获取有效的开始日期
-            valid_start_date = self._get_valid_start_date(symbol, start_date)
-
-            # 如果结束日期早于有效开始日期，返回成功（无需获取数据）
-            end_dt = (
-                end_date
-                if isinstance(end_date, datetime)
-                else datetime.strptime(end_date, "%Y-%m-%d")
-            )
-            if end_dt < valid_start_date:
-                logger.info(
-                    f"End date {end_dt} is earlier than valid start date {valid_start_date}, skipping"
-                )
-                return True
-
-            # 获取数据
-            data_list = self.fetcher.fetch_data(symbol, valid_start_date, end_date)
-            if not data_list:
-                logger.warning(f"No data fetched for {symbol}")
-                return False
-
-            # 根据 upsert 参数选择插入方式
-            if upsert:
-                result = self.db_client.upsert_trading_data(data_list)
-            else:
-                result = self.db_client.batch_insert_trading_data(data_list)
-
-            if result:
-                logger.info(f"Successfully updated data for {symbol}")
-            return result
-
-        except Exception as e:
-            logger.error(f"Error updating stock data: {e}")
+        """获取股票数据，支持单个股票或所有活跃股票"""
+        end_date = end_date or datetime.now()
+        symbols = [symbol] if symbol else self.db_client.get_active_symbols()
+        
+        if not symbols:
+            logger.warning("No symbols to fetch")
             return False
+
+        # 准备任务列表
+        tasks = []
+        for sym in symbols:
+            sym_start_date = start_date
+            if not sym_start_date:
+                latest_date = self.db_client.get_latest_date(sym)
+                sym_start_date = (latest_date + timedelta(days=1)) if latest_date else (end_date - timedelta(days=30))
+            
+            tasks.append((sym, sym_start_date, end_date))
+
+        # 使用线程池并发获取数据
+        success = True
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            futures = {
+                executor.submit(self._fetch_single_stock_data, sym, start, end): sym 
+                for sym, start, end in tasks
+            }
+            
+            with tqdm(total=len(tasks), desc="Fetching data") as pbar:
+                for future in as_completed(futures):
+                    symbol = futures[future]
+                    try:
+                        data = future.result()
+                        if data:
+                            # 输出最新一条数据的信息
+                            latest_record = max(data, key=lambda x: x['date'])
+                            logger.info(
+                                f"Symbol: {symbol} | "
+                                f"Latest Date: {latest_record['date']} | "
+                                f"Open: {latest_record['open_price']:.4f} | "
+                                f"Close: {latest_record['close_price']:.4f} | "
+                                f"High: {latest_record['high']:.4f} | "
+                                f"Low: {latest_record['low']:.4f} | "
+                                f"Volume: {latest_record['volume']:,}"
+                            )
+                            
+                            if not self.db_client.upsert_trading_data(data):
+                                success = False
+                                logger.error(f"Failed to save data for {symbol}")
+                        else:
+                            success = False
+                            logger.warning(f"No data fetched for {symbol}")
+                    except Exception as e:
+                        success = False
+                        logger.error(f"Error processing {symbol}: {e}")
+                    finally:
+                        pbar.update(1)
+
+        return success
 
 
 def main():
-    parser = ArgumentParser(description="股票数据获取工具")
-    parser.add_argument("symbol", help="股票代码，例如：AAPL, 000001.SZ")
-    parser.add_argument(
-        "--start-date",
-        default="2000-01-01",
-        help="开始日期 (YYYY-MM-DD)，默认为2000-01-01",
-    )
-    parser.add_argument(
-        "--end-date",
-        default=datetime.now().strftime("%Y-%m-%d"),
-        help="结束日期 (YYYY-MM-DD)，默认为今天",
-    )
-    parser.add_argument(
-        "--source",
-        default="yfinance",
-        choices=["yfinance"],
-        help="数据源，默认为yfinance",
-    )
-
+    """命令行入口"""
+    parser = argparse.ArgumentParser(description="股票数据获取工具")
+    parser.add_argument("--symbol", help="股票代码，不指定则更新所有股票", default=None)
+    parser.add_argument("--start-date", help="开始日期 (YYYY-MM-DD)", default=None)
+    parser.add_argument("--end-date", help="结束日期 (YYYY-MM-DD)", default=None)
+    parser.add_argument("--workers", help="并发数", type=int, default=5)
+    parser.add_argument("--retries", help="重试次数", type=int, default=3)
+    parser.add_argument("--yes", "-y", help="跳过所有确认", action="store_true")
+    
     args = parser.parse_args()
-
-    # 初始化数据库客户端
-    db_client = DBClient()
-
-    # 确保数据库表已创建
-    db_client.init_db()
-
-    # 创建股票数据管理器
-    stock_manager = StockDataManager(
-        db_client=db_client,
-        fetcher_source=args.source,
-    )
-
-    # 更新股票数据
-    success = stock_manager.update_stock_data(
+    
+    start_date = datetime.strptime(args.start_date, "%Y-%m-%d") if args.start_date else None
+    end_date = datetime.strptime(args.end_date, "%Y-%m-%d") if args.end_date else None
+    
+    if not args.yes:
+        confirm = input("是否开始获取数据？(y/N) ")
+        if confirm.lower() != 'y':
+            logger.info("取消操作")
+            return
+    
+    manager = StockDataManager(max_workers=args.workers, max_retries=args.retries)
+    success = manager.fetch_data(
         symbol=args.symbol,
-        start_date=args.start_date,
-        end_date=args.end_date,
+        start_date=start_date,
+        end_date=end_date
     )
-
+    
     if success:
-        logger.info(f"Successfully updated data for {args.symbol}")
+        logger.info("Data fetch completed successfully")
     else:
-        logger.error(f"Failed to update data for {args.symbol}")
+        logger.warning("Data fetch completed with some errors")
+        exit(1)
 
 
 if __name__ == "__main__":

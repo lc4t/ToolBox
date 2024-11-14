@@ -11,6 +11,7 @@ from db import DBClient
 from loguru import logger
 from notify import NotifyManager, create_backtest_result
 from tabulate import tabulate
+from analyzers import PerformanceAnalyzer
 
 
 @dataclass
@@ -224,7 +225,7 @@ class DualMAStrategy(bt.Strategy):
                     f"\n   - 卖出数: {sell_size}"
                     f"\n   - 卖出金额: {sell_value:.4f}"
                     f"\n   - 卖出手续费: {sell_commission:.4f}"
-                    f"\n3. 盈亏计算:"
+                    f"\n3. 算:"
                     f"\n   - 交易差价: {sell_value - buy_value:.4f} (卖出金额 - 买入金额)"
                     f"\n   - 总手续费: {total_commission:.4f} (买入手续费 + 卖出手续费)"
                     f"\n   - 最终盈亏: {pnl:.4f} (交易差价 - 总手续费)"
@@ -417,7 +418,7 @@ class BacktestRunner:
         results = cerebro.run()
         strat = results[0]
 
-        # 生成回测报告，添加交易记录
+        # 成回测报告，添加易记录
         return self._generate_report(
             strat, initial_capital, cerebro.broker.getvalue(), strat.trade_records
         )
@@ -463,121 +464,118 @@ class BacktestRunner:
 
         return data_feed
 
-    def _calculate_performance_metrics(
-        self,
-        strat,
-        initial_capital: float,
-        final_value: float,
-        trade_records: List[TradeRecord],
-    ) -> Dict:
-        """计算性能指标"""
-        # 计算运行天数
-        first_trade = trade_records[0] if trade_records else None
-        last_trade = trade_records[-1] if trade_records else None
-        running_days = (
-            (last_trade.date - first_trade.date).days + 1 if first_trade else 0
-        )
-
-        # 计算年化收益率
-        years = running_days / 365
-        annual_return = (
-            ((final_value / initial_capital) ** (1 / years) - 1) * 100
-            if years > 0
-            else 0
-        )
-
-        # 计算胜率和盈亏比
-        winning_trades = [t for t in trade_records if t.pnl > 0]
-        losing_trades = [t for t in trade_records if t.pnl < 0]
-        win_rate = (
-            len(winning_trades) / len(trade_records) * 100 if trade_records else 0
-        )
-
-        avg_win = (
-            sum(t.pnl for t in winning_trades) / len(winning_trades)
-            if winning_trades
-            else 0
-        )
-        avg_loss = (
-            abs(sum(t.pnl for t in losing_trades) / len(losing_trades))
-            if losing_trades
-            else 0
-        )
-        profit_factor = avg_win / avg_loss if avg_loss != 0 else 0
-
-        # 计算SQN
-        if trade_records:
-            pnl_array = np.array([t.pnl for t in trade_records])
-            sqn = (
-                np.sqrt(len(trade_records)) * (np.mean(pnl_array) / np.std(pnl_array))
-                if len(trade_records) > 1
-                else 0
-            )
-        else:
-            sqn = 0
-
-        # 计算Calmar比率
-        max_drawdown = (
-            strat.analyzers.drawdown.get_analysis().get("max", {}).get("drawdown", 0)
-        )
-        calmar_ratio = annual_return / max_drawdown if max_drawdown != 0 else 0
-
-        return {
-            "latest_nav": final_value / initial_capital,
-            "annual_return": annual_return,
-            "win_rate": win_rate,
-            "profit_factor": profit_factor,
-            "sqn": sqn,
-            "vwr": strat.analyzers.vwr.get_analysis().get("vwr", 0),
-            "total_trades": len(trade_records),
-            "running_days": running_days,
-            "sharpe_ratio": strat.analyzers.sharpe.get_analysis().get("sharperatio", 0),
-            "current_drawdown": strat.analyzers.drawdown.get_analysis().get(
-                "drawdown", 0
-            ),
-            "max_drawdown": max_drawdown,
-            "calmar_ratio": calmar_ratio,
-        }
-
     def _generate_report(self, strat, initial_capital, final_value, trade_records):
-        # 计算性能指标
-        metrics = self._calculate_performance_metrics(
-            strat, initial_capital, final_value, trade_records
+        # 获取最后一个交易日期（从数据中获取，而不是用户指定的日期）
+        last_trade_date = strat.data.datetime.datetime()  # 获取最后一个数据点的日期
+        
+        # 收集分析器结果
+        analyzers_results = {
+            'trades': strat.analyzers.trades.get_analysis(),
+            'sharpe': strat.analyzers.sharpe.get_analysis(),
+            'drawdown': strat.analyzers.drawdown.get_analysis(),
+            'vwr': strat.analyzers.vwr.get_analysis(),
+        }
+        
+        # 使用性能分析器计算指标
+        metrics = PerformanceAnalyzer.calculate_metrics(
+            initial_capital,
+            final_value,
+            trade_records,
+            analyzers_results
         )
 
         # 计算总收益率
         total_return = ((final_value / initial_capital) - 1) * 100
 
-        # 合并到报告中
-        report = {
+        # 预测下一个交易信号
+        next_signal = self._predict_next_signal(strat)
+
+        # 转换所有交易记录
+        all_trades = [
+            {
+                "date": t.date.strftime("%Y-%m-%d %H:%M:%S"),
+                "action": t.action,
+                "price": t.price,
+                "size": t.size,
+                "value": t.value,
+                "commission": t.commission,
+                "pnl": t.pnl,
+                "total_value": t.total_value,
+                "signal_reason": t.signal_reason,
+                "cash": t.cash,
+            }
+            for t in trade_records
+        ]
+
+        # 只取最近20条用于邮件通知
+        recent_trades = all_trades[-20:] if all_trades else []
+
+        return {
             "initial_capital": initial_capital,
             "final_value": final_value,
             "total_return": total_return,
             "metrics": metrics,
-            "trades": [
-                {
-                    "date": t.date.strftime("%Y-%m-%d %H:%M:%S"),
-                    "action": t.action,
-                    "price": t.price,
-                    "size": t.size,
-                    "value": t.value,
-                    "commission": t.commission,
-                    "pnl": t.pnl,
-                    "total_value": t.total_value,
-                    "signal_reason": t.signal_reason,
-                    "cash": t.cash,
-                }
-                for t in trade_records
-            ],
+            "all_trades": all_trades,  # 所有交易记录
+            "trades": recent_trades,    # 最近20条交易记录
+            "next_signal": next_signal,
+            "last_trade_date": last_trade_date,  # 添加最后交易日期
         }
-        return report
+
+    def _predict_next_signal(self, strat) -> Dict:
+        """预测下一个交易信号"""
+        current_position = bool(strat.position)
+        
+        # 获取最新的技术指标数据
+        short_ma = strat.short_ma[0]
+        long_ma = strat.long_ma[0]
+        prev_short_ma = strat.short_ma[-1]
+        prev_long_ma = strat.long_ma[-1]
+        
+        signal = {
+            "action": "观察",  # 默认动作
+            "conditions": [],
+            "stop_loss": None
+        }
+
+        if not current_position:
+            # 检查买入条件
+            if strat.signal_calculator.check_ma_signal(
+                short_ma, long_ma, prev_short_ma, prev_long_ma
+            ):
+                signal["action"] = "买入"
+                signal["conditions"].append(
+                    f"MA{strat.params.short_period}({short_ma:.2f}) > "
+                    f"MA{strat.params.long_period}({long_ma:.2f})"
+                )
+                
+                # 添加止损条件
+                if strat.params.use_chandelier:
+                    stop_price = strat.highest[0] - (strat.params.chandelier_multiplier * strat.atr[0])
+                    signal["stop_loss"] = f"吊灯止损价: {stop_price:.2f}"
+                
+                if strat.params.use_adr:
+                    stop_price = strat.data.close[0] - (strat.params.adr_multiplier * strat.adr[0])
+                    signal["stop_loss"] = f"ADR止损价: {stop_price:.2f}"
+        
+        else:
+            # 检查卖出条件
+            should_exit, exit_reason = strat._calculate_exit_signals()
+            if should_exit:
+                signal["action"] = "卖出"
+                signal["conditions"].append(exit_reason)
+
+        return signal
 
 
 def main():
     parser = ArgumentParser(description="股票回测工具")
     parser.add_argument("symbol", help="股票代码")
     parser.add_argument("--start-date", required=True, help="开始日期 (YYYY-MM-DD)")
-    parser.add_argument("--end-date", required=True, help="结束日期 (YYYY-MM-DD)")
+    parser.add_argument(
+        "--end-date", 
+        default=datetime.now().strftime("%Y-%m-%d"),
+        help="结束日期 (YYYY-MM-DD)，默认为今天"
+    )
     parser.add_argument(
         "--initial-capital", type=float, default=100000, help="初始资金"
     )
@@ -628,6 +626,13 @@ def main():
         help="邮件接收者，多个接收者用逗号分隔，例如：user1@example.com,user2@example.com",
     )
 
+    # 添加 --yes 参数
+    parser.add_argument(
+        "--yes", "-y",
+        action="store_true",
+        help="跳过所有确认"
+    )
+
     args = parser.parse_args()
 
     # 准备策略参数
@@ -661,116 +666,68 @@ def main():
     print(f"初始资金: {results['initial_capital']:.2f}")
     print(f"最终权益: {results['final_value']:.2f}")
     print(f"总收益率: {results['total_return']:.2f}%")
-    print(f"夏普比率: {results.get('sharpe_ratio') or 0.0:.2f}")
-    print(f"最大回撤: {results.get('max_drawdown') or 0.0:.2f}%")
 
-    # 打印交易统计
-    trade_analysis = results.get("trade_analysis", {})
-    if trade_analysis:
-        print("\n=== 交易统计 ===")
-        try:
-            # 总交易次数
-            total_trades = 0
-            if hasattr(trade_analysis, "total"):
-                total = trade_analysis.total
-                total_trades = getattr(total, "total", 0)
-            print(f"总交易次数: {total_trades}")
+    # 打印性能指标
+    metrics = results['metrics']
+    print("\n=== 性能指标 ===")
+    print(f"最新净值: {metrics['latest_nav']:.2f}")
+    print(f"年化收益率: {metrics['annual_return']:.2f}%")
+    print(f"总交易次数: {metrics['total_trades']}")
+    print(f"盈利交易: {metrics['won_trades']}")
+    print(f"亏损交易: {metrics['lost_trades']}")
+    print(f"胜率: {metrics['win_rate']:.2f}%")
+    print(f"盈亏比: {metrics['profit_factor']:.2f}")
+    print(f"平均盈利: {metrics['avg_won']:.2f}")
+    print(f"平均亏损: {metrics['avg_lost']:.2f}")
+    print(f"夏普比率: {metrics['sharpe_ratio']:.2f}")
+    print(f"最大回撤: {metrics['max_drawdown']:.2f}%")
+    print(f"当前回撤: {metrics['current_drawdown']:.2f}%")
+    print(f"Calmar比率: {metrics['calmar_ratio']:.2f}")
+    print(f"VWR: {metrics['vwr']:.2f}")
+    print(f"SQN: {metrics['sqn']:.2f}")
+    print(f"运行天数: {metrics['running_days']}")
+    if metrics['start_date']:
+        print(f"开始日期: {metrics['start_date'].strftime('%Y-%m-%d')}")
+        print(f"结束日期: {metrics['end_date'].strftime('%Y-%m-%d')}")
 
-            # 盈利交易
-            won_trades = 0
-            if hasattr(trade_analysis, "won"):
-                won = trade_analysis.won
-                won_trades = getattr(won, "total", 0)
-            print(f"盈利交易: {won_trades}")
-
-            # 亏损交易
-            lost_trades = 0
-            if hasattr(trade_analysis, "lost"):
-                lost = trade_analysis.lost
-                lost_trades = getattr(lost, "total", 0)
-            print(f"亏损交易: {lost_trades}")
-
-            # 额外的统计信息（如果有的话）
-            if won_trades > 0:
-                win_rate = (won_trades / total_trades * 100) if total_trades > 0 else 0
-                print(f"胜率: {win_rate:.2f}%")
-
-                if hasattr(trade_analysis.won, "pnl"):
-                    avg_win = trade_analysis.won.pnl.average
-                    print(f"平均盈利: {avg_win:.2f}")
-
-            if lost_trades > 0 and hasattr(trade_analysis.lost, "pnl"):
-                avg_loss = trade_analysis.lost.pnl.average
-                print(f"平均亏损: {avg_loss:.2f}")
-
-            # 总盈亏
-            if hasattr(trade_analysis, "pnl"):
-                gross_win = getattr(trade_analysis.pnl, "gross", {}).get("total", 0.0)
-                print(f"总盈亏: {gross_win:.2f}")
-
-        except Exception as e:
-            logger.warning(f"Error processing trade analysis: {e}")
-            print("无法获取完整的交易统计信息")
-    else:
-        print("\n没有交易统计信息")
-
-    # 打印交易记录
-    trades = results.get("trades", [])
+    # 打印所有交易记录
+    print("\n=== 所有交易记录 ===")
+    trades = results['all_trades']  # 使用所有交易记录
     if trades:
-        print("\n=== 交易记录 ===")
-
-        # 修改期格式
-        for trade in trades:
-            trade["date"] = datetime.strptime(
-                trade["date"], "%Y-%m-%d %H:%M:%S"
-            ).strftime("%Y-%m-%d")
-
-        # 准备表格数据
+        headers = ["日期", "动作", "价格", "数量", "交易额", "手续费", "盈亏", "总资产", "信号原因"]
         table_data = [
             [
                 trade["date"],
                 trade["action"],
-                f"{trade['price']:,.3f}",
-                f"{trade['value']:,.2f}",
-                f"{trade['commission']:,.2f}",
-                f"{trade['pnl']:,.2f}",
-                f"{trade['total_value']:,.2f}",
+                f"{trade['price']:.3f}",
+                trade["size"],
+                f"{trade['value']:.2f}",
+                f"{trade['commission']:.2f}",
+                f"{trade['pnl']:.2f}",
+                f"{trade['total_value']:.2f}",
                 trade["signal_reason"],
             ]
             for trade in trades
         ]
-
-        # 定义表头
-        headers = [
-            "日期",
-            "动作",
-            "价格",
-            "交易额",
-            "手续费",
-            "盈亏",
-            "总资产",
-            "信号原因",
-        ]
-
-        # 使用tabulate打印表格
-        print(
-            tabulate(
-                table_data,
-                headers=headers,
-                tablefmt="grid",  # 可以选择不同的表格样式
-                floatfmt=".2f",
-                numalign="right",
-                stralign="center",
-            )
-        )
+        print(tabulate(table_data, headers=headers, tablefmt="grid"))
     else:
-        print("\n没有交易记录")
+        print("没有交易记录")
 
-    # 发送通知
+    # 打印下一个交易信号
+    next_signal = results['next_signal']
+    print("\n=== 下一交易日信号 ===")
+    print(f"建议动作: {next_signal['action']}")
+    if next_signal['conditions']:
+        print("触发条件:")
+        for condition in next_signal['conditions']:
+            print(f"  - {condition}")
+    if next_signal['stop_loss']:
+        print(f"止损条件: {next_signal['stop_loss']}")
+
+    # 创建邮件内容并打印
     if args.notify:
         notify_methods = []
         if args.notify in ["email", "all"] and args.email_to:
-            # 临时覆盖环境变量中的收件人
             os.environ["EMAIL_RECIPIENTS"] = args.email_to
             notify_methods.append("email")
         if args.notify in ["wecom", "all"]:
@@ -795,14 +752,22 @@ def main():
                     "adr_multiplier": args.adr_multiplier,
                 },
             )
-
+            
+            # 打印邮件内容预览
+            print("\n=== 邮件内容预览 ===")
+            print(notify_manager.get_message_preview(backtest_result))
+            
+            # 如果没有使用 -y 参数，询问确认
+            if not args.yes:
+                confirm = input("是否发送邮件？(y/N) ")
+                if confirm.lower() != 'y':
+                    logger.info("取消发送邮件")
+                    return
+            
             if notify_manager.send_report(backtest_result):
-                logger.info("Successfully sent notifications")
+                logger.info("Report sent successfully")
             else:
-                logger.error("Failed to send some notifications")
-
+                logger.error("Failed to send report")
 
 if __name__ == "__main__":
-    main()
-    main()
     main()

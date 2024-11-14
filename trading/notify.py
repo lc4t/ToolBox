@@ -6,8 +6,8 @@ from datetime import datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
-from typing import Dict, List, Optional
-
+from typing import Dict, List, Optional, Any
+from db import DBClient
 import requests
 # 加载环境变量配置
 from dotenv import load_dotenv
@@ -23,6 +23,7 @@ class BacktestResult:
     """回测结果数据类"""
 
     symbol: str
+    symbol_info: Dict
     start_date: datetime
     end_date: datetime
     initial_capital: float
@@ -40,6 +41,7 @@ class BacktestResult:
     trades: List[Dict]
     strategy_params: Dict
     metrics: Dict
+    next_signal: Dict
 
 
 class NotifyTemplate(ABC):
@@ -51,7 +53,7 @@ class NotifyTemplate(ABC):
         pass
 
     @abstractmethod
-    def send(self, message: str) -> bool:
+    def send(self, message: str, result: BacktestResult) -> bool:
         """发送消息"""
         pass
 
@@ -90,8 +92,13 @@ class WecomNotifyTemplate(NotifyTemplate):
 
         message += "\n## 最近交易记录（最多显示5条）\n"
         for trade in result.trades[-5:]:
+            trade_date = (
+                trade['date'].strftime('%Y-%m-%d') 
+                if isinstance(trade['date'], datetime) 
+                else trade['date']
+            )
             message += (
-                f"- {trade['date']} {trade['action']} "
+                f"- {trade_date} {trade['action']} "
                 f"价格：{trade['price']:.3f} "
                 f"数量：{trade['size']} "
                 f"盈亏：{trade['pnl']:.2f}\n"
@@ -99,7 +106,7 @@ class WecomNotifyTemplate(NotifyTemplate):
 
         return message
 
-    def send(self, message: str) -> bool:
+    def send(self, message: str, result: BacktestResult) -> bool:
         """发送到企业微信"""
         try:
             response = requests.post(
@@ -140,17 +147,61 @@ class EmailNotifyTemplate(NotifyTemplate):
 
     def format_message(self, result: BacktestResult) -> str:
         """使用HTML模板格式化消息"""
-        template = self.env.get_template("backtest_report.html")
-        return template.render(result=result)
+        # 处理交易记录中的日期格式
+        trades_with_formatted_date = []
+        for trade in result.trades:
+            trade_copy = trade.copy()
+            if isinstance(trade['date'], datetime):
+                trade_copy['date'] = trade['date'].date()  # 只保留日期部分
+            elif isinstance(trade['date'], str) and len(trade['date']) > 10:  # 如果是带时间的字符串
+                trade_copy['date'] = trade['date'][:10]  # 只保留 YYYY-MM-DD 部分
+            trades_with_formatted_date.append(trade_copy)
+        
+        # 创建一个新的结果对象，避免修改原始数据
+        formatted_result = BacktestResult(
+            symbol=result.symbol,
+            symbol_info=result.symbol_info,
+            start_date=result.start_date,
+            end_date=result.end_date,
+            initial_capital=result.initial_capital,
+            final_value=result.final_value,
+            total_return=result.total_return,
+            sharpe_ratio=result.sharpe_ratio,
+            max_drawdown=result.max_drawdown,
+            total_trades=result.total_trades,
+            won_trades=result.won_trades,
+            lost_trades=result.lost_trades,
+            win_rate=result.win_rate,
+            avg_win=result.avg_win,
+            avg_loss=result.avg_loss,
+            gross_pnl=result.gross_pnl,
+            trades=trades_with_formatted_date,  # 使用格式化后的交易记录
+            strategy_params=result.strategy_params,
+            metrics=result.metrics,
+            next_signal=result.next_signal,
+        )
 
-    def send(self, message: str) -> bool:
+        template = self.env.get_template("backtest_report.html")
+        return template.render(result=formatted_result)
+
+    def send(self, message: str, result: BacktestResult) -> bool:
         """发送邮件"""
         try:
             msg = MIMEMultipart("alternative")
-            msg["Subject"] = f'回测报告 - {datetime.now().strftime("%Y-%m-%d")}'
+            
+            # 获取股票名称
+            symbol_info = self._get_symbol_info(result.symbol)
+            name = symbol_info.get('name', '')
+            
+            # 获取最后交易日期
+            last_date = result.end_date.strftime("%Y-%m-%d")
+            
+            # 构建邮件标题
+            signal_text = f"【{result.next_signal['action']}】"
+            msg["Subject"] = f"{signal_text}{name}({result.symbol})-{last_date}"
+            
             msg["From"] = self.smtp_username
             msg["To"] = ", ".join(self.recipients)
-
             msg.attach(MIMEText(message, "html"))
 
             with smtplib.SMTP(self.smtp_server, self.smtp_port) as server:
@@ -161,6 +212,15 @@ class EmailNotifyTemplate(NotifyTemplate):
         except Exception as e:
             logger.error(f"Failed to send email notification: {e}")
             return False
+
+    def _get_symbol_info(self, symbol: str) -> Dict:
+        """从数据库获取股票信息"""
+        try:
+            db_client = DBClient()
+            return db_client.get_symbol_info(symbol) or {}
+        except Exception as e:
+            logger.error(f"Failed to get symbol info: {e}")
+            return {}
 
 
 class NotifyManager:
@@ -189,54 +249,63 @@ class NotifyManager:
         success = True
         for template in self.templates:
             message = template.format_message(result)
-            if not template.send(message):
+            if not template.send(message, result):
                 success = False
         return success
+
+    def get_message_preview(self, result: BacktestResult) -> str:
+        """生成消息预览"""
+        if not self.templates:
+            return "No notification templates available"
+            
+        # 优先使用邮件模板，因为它包含更详细的信息
+        for template in self.templates:
+            if isinstance(template, EmailNotifyTemplate):
+                return template.format_message(result)
+        
+        # 如果没有邮件模板，使用第一个可用的模板
+        return self.templates[0].format_message(result)
+
+    def _get_template(self, template_type: str) -> Optional[NotifyTemplate]:
+        """取指定类型的模板"""
+        for template in self.templates:
+            if (template_type == "email" and isinstance(template, EmailNotifyTemplate)) or \
+               (template_type == "wecom" and isinstance(template, WecomNotifyTemplate)):
+                return template
+        return None
 
 
 def create_backtest_result(results: Dict, strategy_params: Dict) -> BacktestResult:
     """从回测结果创建BacktestResult对象"""
-    trade_analysis = results.get("trade_analysis", {})
-
-    # 提取交易统计信息
-    total_trades = getattr(getattr(trade_analysis, "total", None), "total", 0)
-    won_trades = getattr(getattr(trade_analysis, "won", None), "total", 0)
-    lost_trades = getattr(getattr(trade_analysis, "lost", None), "total", 0)
-
-    # 计算胜率
-    win_rate = (won_trades / total_trades * 100) if total_trades > 0 else 0
-
-    # 获取平均盈亏
-    avg_win = None
-    if hasattr(trade_analysis, "won") and hasattr(trade_analysis.won, "pnl"):
-        avg_win = trade_analysis.won.pnl.average
-
-    avg_loss = None
-    if hasattr(trade_analysis, "lost") and hasattr(trade_analysis.lost, "pnl"):
-        avg_loss = trade_analysis.lost.pnl.average
-
-    # 获取总盈亏
-    gross_pnl = 0.0
-    if hasattr(trade_analysis, "pnl"):
-        gross_pnl = getattr(trade_analysis.pnl, "gross", {}).get("total", 0.0)
+    metrics = results.get('metrics', {})
+    
+    # 获取股票信息
+    try:
+        db_client = DBClient()
+        symbol_info = db_client.get_symbol_info(strategy_params.get("symbol", "")) or {}
+    except Exception as e:
+        logger.error(f"Failed to get symbol info: {e}")
+        symbol_info = {}
 
     return BacktestResult(
         symbol=strategy_params.get("symbol", "Unknown"),
+        symbol_info=symbol_info,
         start_date=strategy_params.get("start_date"),
-        end_date=strategy_params.get("end_date"),
+        end_date=results.get("last_trade_date"),
         initial_capital=results["initial_capital"],
         final_value=results["final_value"],
         total_return=results["total_return"],
-        sharpe_ratio=results.get("sharpe_ratio", 0.0),
-        max_drawdown=results.get("max_drawdown", 0.0),
-        total_trades=total_trades,
-        won_trades=won_trades,
-        lost_trades=lost_trades,
-        win_rate=win_rate,
-        avg_win=avg_win,
-        avg_loss=avg_loss,
-        gross_pnl=gross_pnl,
+        sharpe_ratio=metrics.get("sharpe_ratio", 0.0),
+        max_drawdown=metrics.get("max_drawdown", 0.0),
+        total_trades=metrics.get("total_trades", 0),
+        won_trades=metrics.get("won_trades", 0),
+        lost_trades=metrics.get("lost_trades", 0),
+        win_rate=metrics.get("win_rate", 0.0),
+        avg_win=metrics.get("avg_won"),
+        avg_loss=metrics.get("avg_lost"),
+        gross_pnl=metrics.get("total_pnl", 0.0),
         trades=results.get("trades", []),
         strategy_params=strategy_params,
-        metrics=results.get("metrics", {}),
+        metrics=metrics,
+        next_signal=results.get("next_signal", {"action": "观察", "conditions": [], "stop_loss": None}),
     )

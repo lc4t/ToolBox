@@ -1350,6 +1350,15 @@ wheels = [
 ]
 
 [[package]]
+name = "tenacity"
+version = "9.0.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/cd/94/91fccdb4b8110642462e653d5dcb27e7b674742ad68efd146367da7bdb10/tenacity-9.0.0.tar.gz", hash = "sha256:807f37ca97d62aa361264d497b0e31e92b8027044942bfa756160d908320d73b", size = 47421 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b6/cb/b86984bed139586d01532a587464b5805f12e397594f19f931c4c2fbfa61/tenacity-9.0.0-py3-none-any.whl", hash = "sha256:93de0c98785b27fcf659856aa9f54bfbd399e29969b0621bc7f762bd441b4539", size = 28169 },
+]
+
+[[package]]
 name = "toolbox"
 version = "0.1.0"
 source = { virtual = "." }
@@ -1368,6 +1377,8 @@ dependencies = [
     { name = "requests", extra = ["socks"] },
     { name = "sqlalchemy" },
     { name = "tabulate" },
+    { name = "tenacity" },
+    { name = "tqdm" },
     { name = "yfinance" },
 ]
 
@@ -1387,7 +1398,21 @@ requires-dist = [
     { name = "requests", extras = ["socks"], specifier = ">=2.32.3" },
     { name = "sqlalchemy", specifier = ">=2.0.36" },
     { name = "tabulate", specifier = ">=0.9.0" },
+    { name = "tenacity", specifier = ">=9.0.0" },
+    { name = "tqdm", specifier = ">=4.67.0" },
     { name = "yfinance", specifier = ">=0.2.48" },
+]
+
+[[package]]
+name = "tqdm"
+version = "4.67.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "colorama", marker = "platform_system == 'Windows'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/e8/4f/0153c21dc5779a49a0598c445b1978126b1344bab9ee71e53e44877e14e0/tqdm-4.67.0.tar.gz", hash = "sha256:fe5a6f95e6fe0b9755e9469b77b9c3cf850048224ecaa8293d7d2d31f97d869a", size = 169739 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/2b/78/57043611a16c655c8350b4c01b8d6abfb38cc2acb475238b62c2146186d7/tqdm-4.67.0-py3-none-any.whl", hash = "sha256:0cd8af9d56911acab92182e88d763100d4788bdf421d251616040cc4d44863be", size = 78590 },
 ]
 
 [[package]]

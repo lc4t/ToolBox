@@ -76,7 +76,7 @@ class SymbolInfo(Base):
     status = Column(
         String(20), nullable=False, default="active", comment="状态：active,delisted"
     )
-    description = Column(String(500), nullable=True, comment="描述")
+    description = Column(String(500), nullable=True, comment="描")
     create_time = Column(
         DATETIME, nullable=False, default=datetime.now, comment="创建时间"
     )
@@ -229,17 +229,12 @@ class DBClient:
         """获取股票基本信息"""
         try:
             with self.Session() as session:
-                info = (
-                    session.query(SymbolInfo)
-                    .filter(SymbolInfo.symbol == symbol)
-                    .first()
-                )
+                info = session.query(SymbolInfo).filter(SymbolInfo.symbol == symbol).first()
 
                 if not info:
                     return None
 
                 return {
-                    "id": info.id,
                     "symbol": info.symbol,
                     "name": info.name,
                     "listing_date": info.listing_date,
@@ -286,18 +281,48 @@ class DBClient:
                     processed_data.append(processed_item)
 
                 # 使用 INSERT ... ON DUPLICATE KEY UPDATE 语法
-                insert_stmt = insert(TradingData).prefix_with("INSERT")
+                stmt = insert(TradingData).values(processed_data)
                 update_dict = {
-                    "open_price": insert_stmt.inserted.open_price,
-                    "close_price": insert_stmt.inserted.close_price,
-                    "high": insert_stmt.inserted.high,
-                    "low": insert_stmt.inserted.low,
-                    "volume": insert_stmt.inserted.volume,
+                    "open_price": stmt.inserted.open_price,
+                    "close_price": stmt.inserted.close_price,
+                    "high": stmt.inserted.high,
+                    "low": stmt.inserted.low,
+                    "volume": stmt.inserted.volume,
+                    "update_time": datetime.now()
                 }
-                upsert_stmt = insert_stmt.on_duplicate_key_update(update_dict)
-                session.execute(upsert_stmt, processed_data)
+                stmt = stmt.on_duplicate_key_update(**update_dict)
+                
+                session.execute(stmt)
                 session.commit()
                 return True
         except SQLAlchemyError as e:
             logger.error(f"Error upserting data: {e}")
             return False
+
+    def get_active_symbols(self) -> List[str]:
+        """获取所有活跃的股票代码"""
+        try:
+            with self.Session() as session:
+                symbols = (
+                    session.query(SymbolInfo.symbol)
+                    .filter(SymbolInfo.status == 'active')
+                    .all()
+                )
+                return [symbol[0] for symbol in symbols]
+        except SQLAlchemyError as e:
+            logger.error(f"Error fetching active symbols: {e}")
+            return []
+
+    def get_latest_date(self, symbol: str) -> Optional[datetime]:
+        """获取指定股票最新的交易数据日期"""
+        try:
+            with self.Session() as session:
+                result = (
+                    session.query(func.max(TradingData.date))
+                    .filter(TradingData.symbol == symbol)
+                    .scalar()
+                )
+                return result
+        except SQLAlchemyError as e:
+            logger.error(f"Error getting latest date for {symbol}: {e}")
+            return None
