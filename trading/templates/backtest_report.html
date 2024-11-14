@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <style>
+        body { font-family: Arial, sans-serif; }
+        .container { max-width: 800px; margin: 0 auto; padding: 20px; }
+        .header { text-align: center; margin-bottom: 30px; }
+        .section { margin-bottom: 30px; }
+        .metrics { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+        .metric { background: #f5f5f5; padding: 10px; border-radius: 5px; }
+        .trades { width: 100%; border-collapse: collapse; margin-top: 20px; }
+        .trades th, .trades td { padding: 8px; text-align: right; border-bottom: 1px solid #ddd; }
+        .trades th { background: #f5f5f5; }
+        .positive { color: #4caf50; }
+        .negative { color: #f44336; }
+    </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <h1>回测报告 - {{ result.symbol }}</h1>
+                <p>{{ result.start_date.date() }} 至 {{ result.end_date.date()
+                    }}</p>
+            </div>
+
+            <div class="section">
+                <h2>基本信息</h2>
+                <div class="metrics">
+                    <div class="metric">
+                        <strong>初始资金：</strong>
+                        <span>{{ "%.2f"|format(result.initial_capital) }}</span>
+                    </div>
+                    <div class="metric">
+                        <strong>最终权益：</strong>
+                        <span>{{ "%.2f"|format(result.final_value) }}</span>
+                    </div>
+                    <div class="metric">
+                        <strong>总收益率：</strong>
+                        <span
+                            class="{{ 'positive' if result.total_return > 0 else 'negative' }}">
+                            {{ "%.2f"|format(result.total_return) }}%
+                        </span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="section">
+                <h2>性能指标</h2>
+                <div class="metrics">
+                    <div class="metric">
+                        <strong>夏普比率：</strong>
+                        <span>{{ "%.2f"|format(result.sharpe_ratio) }}</span>
+                    </div>
+                    <div class="metric">
+                        <strong>最大回撤：</strong>
+                        <span class="negative">{{
+                            "%.2f"|format(result.max_drawdown) }}%</span>
+                    </div>
+                    <div class="metric">
+                        <strong>总交易次数：</strong>
+                        <span>{{ result.total_trades }}</span>
+                    </div>
+                    <div class="metric">
+                        <strong>胜率：</strong>
+                        <span>{{ "%.2f"|format(result.win_rate) }}%</span>
+                    </div>
+                    <div class="metric">
+                        <strong>平均盈利：</strong>
+                        <span class="positive">
+                            {{ "%.2f"|format(result.avg_win) if result.avg_win
+                            else 'N/A' }}
+                        </span>
+                    </div>
+                    <div class="metric">
+                        <strong>平均亏损：</strong>
+                        <span class="negative">
+                            {{ "%.2f"|format(result.avg_loss) if result.avg_loss
+                            else 'N/A' }}
+                        </span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="section">
+                <h2>策略参数</h2>
+                <div class="metrics">
+                    {% for key, value in result.strategy_params.items() %}
+                    <div class="metric">
+                        <strong>{{ key }}：</strong>
+                        <span>{{ value }}</span>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+
+            <div class="section">
+                <h2>核心指标</h2>
+                <div class="metrics">
+                    <div class="metric">
+                        <strong>最新净值：</strong>
+                        <span>{{ "%.4f"|format(result.metrics.latest_nav)
+                            }}</span>
+                    </div>
+                    <div class="metric">
+                        <strong>年化收益：</strong>
+                        <span
+                            class="{{ 'positive' if result.metrics.annual_return > 0 else 'negative' }}">
+                            {{ "%.2f"|format(result.metrics.annual_return) }}%
+                        </span>
+                    </div>
+                    <div class="metric">
+                        <strong>胜率：</strong>
+                        <span>{{ "%.2f"|format(result.metrics.win_rate)
+                            }}%</span>
+                    </div>
+                    <div class="metric">
+                        <strong>盈亏比：</strong>
+                        <span>{{ "%.2f"|format(result.metrics.profit_factor)
+                            }}</span>
+                    </div>
+                    <div class="metric">
+                        <strong>SQN：</strong>
+                        <span>{{ "%.2f"|format(result.metrics.sqn) }}</span>
+                    </div>
+                    <div class="metric">
+                        <strong>VWR：</strong>
+                        <span>{{ "%.2f"|format(result.metrics.vwr) }}</span>
+                    </div>
+                    <div class="metric">
+                        <strong>总交易次数：</strong>
+                        <span>{{ result.metrics.total_trades }}</span>
+                    </div>
+                    <div class="metric">
+                        <strong>运行天数：</strong>
+                        <span>{{ result.metrics.running_days }}</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="section">
+                <h2>风险指标</h2>
+                <div class="metrics">
+                    <div class="metric">
+                        <strong>夏普比率：</strong>
+                        <span>{{ "%.2f"|format(result.metrics.sharpe_ratio)
+                            }}</span>
+                    </div>
+                    <div class="metric">
+                        <strong>当前回撤：</strong>
+                        <span class="negative">{{
+                            "%.2f"|format(result.metrics.current_drawdown)
+                            }}%</span>
+                    </div>
+                    <div class="metric">
+                        <strong>最大回撤：</strong>
+                        <span class="negative">{{
+                            "%.2f"|format(result.metrics.max_drawdown)
+                            }}%</span>
+                    </div>
+                    <div class="metric">
+                        <strong>Calmar比率：</strong>
+                        <span>{{ "%.2f"|format(result.metrics.calmar_ratio)
+                            }}</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="section">
+                <h2>最近交易记录</h2>
+                <table class="trades">
+                    <tr>
+                        <th>日期</th>
+                        <th>动作</th>
+                        <th>价格</th>
+                        <th>数量</th>
+                        <th>交易额</th>
+                        <th>盈亏</th>
+                    </tr>
+                    {% for trade in result.trades[-5:] %}
+                    <tr>
+                        <td>{{ trade.date }}</td>
+                        <td>{{ trade.action }}</td>
+                        <td>{{ "%.3f"|format(trade.price) }}</td>
+                        <td>{{ trade.size }}</td>
+                        <td>{{ "%.2f"|format(trade.value) }}</td>
+                        <td
+                            class="{{ 'positive' if trade.pnl > 0 else 'negative' }}">
+                            {{ "%.2f"|format(trade.pnl) }}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </table>
+            </div>
+        </div>
+    </body>
+</html>
