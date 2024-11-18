@@ -28,6 +28,11 @@ logger.add(
     compression="zip",
 )
 
+# 在文件开头添加常量定义
+SEPARATOR_WIDTH = 60
+SECTION_SEPARATOR = "=" * SEPARATOR_WIDTH
+SUBSECTION_SEPARATOR = "-" * SEPARATOR_WIDTH
+
 
 @dataclass
 class TradeRecord:
@@ -918,6 +923,72 @@ def parse_range(value: str, step: float = 1.0) -> List[float]:
     return [round(x * step, 1) for x in range(int(start / step), int(end / step) + 1)]
 
 
+def _print_metrics(metrics: dict):
+    """格式化打印性能指标"""
+    logger.info(f"\n{SECTION_SEPARATOR}")
+    logger.info(f"{'性能指标':^{SEPARATOR_WIDTH}}")
+    logger.info(SECTION_SEPARATOR)
+    
+    # 使用两列布局
+    metrics_layout = [
+        ("最新净值", f"{metrics['latest_nav']:>12.2f}", "年化收益率", f"{metrics['annual_return']:>12.2f}%"),
+        ("总交易次数", f"{metrics['total_trades']:>12d}", "胜率", f"{metrics['win_rate']:>12.2f}%"),
+        ("盈利交易", f"{metrics['won_trades']:>12d}", "亏损交易", f"{metrics['lost_trades']:>12d}"),
+        ("平均盈利", f"{metrics['avg_won']:>12.2f}", "平均亏损", f"{metrics['avg_lost']:>12.2f}"),
+        ("夏普比率", f"{metrics['sharpe_ratio']:>12.2f}", "盈亏比", f"{metrics['profit_factor']:>12.2f}"),
+        ("最大回撤", f"{metrics['max_drawdown']:>12.2f}%", "当前回撤", f"{metrics['current_drawdown']:>12.2f}%"),
+        ("Calmar比率", f"{metrics['calmar_ratio']:>12.2f}", "VWR", f"{metrics['vwr']:>12.2f}"),
+        ("SQN", f"{metrics['sqn']:>12.2f}", "运行天数", f"{metrics['running_days']:>12d}"),
+    ]
+    
+    for row in metrics_layout:
+        logger.info(f"{row[0]:<12}{row[1]:<16}{row[2]:<12}{row[3]}")
+
+
+def _print_combination_result(idx: int, result: dict):
+    """格式化打印单个参数组合的结果"""
+    logger.info(f"\n{SECTION_SEPARATOR}")
+    logger.info(f"{'参数组合 ' + str(idx):^{SEPARATOR_WIDTH}}")
+    logger.info(SECTION_SEPARATOR)
+    
+    # 格式化参数字符串
+    params_str = ", ".join(
+        f"{k}={v}"
+        for k, v in result["params"].items()
+        if k in [
+            "ma_short", "ma_long", "chandelier_period",
+            "chandelier_multiplier", "adr_period", "adr_multiplier"
+        ]
+    )
+    logger.info(f"参数配置: {params_str}")
+    logger.info(SUBSECTION_SEPARATOR)
+
+
+def _print_next_signal(next_signal: dict):
+    """格式化打印下一交易日信号"""
+    logger.info(f"\n{SECTION_SEPARATOR}")
+    logger.info(f"{'下一交易日信号':^{SEPARATOR_WIDTH}}")
+    logger.info(SECTION_SEPARATOR)
+    
+    logger.info(f"建议动作: {next_signal['action']:>12}")
+    
+    if next_signal["position_info"]:
+        pos_info = next_signal["position_info"]
+        logger.info(SUBSECTION_SEPARATOR)
+        logger.info("当前持仓信息:")
+        info_layout = [
+            ("买入日期", pos_info['entry_date']),
+            ("买入价格", f"{pos_info['entry_price']:.3f}"),
+            ("买入金额", f"{pos_info['position_value']:.2f}"),
+            ("持仓数量", str(pos_info['position_size'])),
+            ("当前价格", f"{pos_info['current_price']:.3f}"),
+            ("当前市值", f"{pos_info['current_value']:.2f}"),
+            ("浮动盈亏", f"{pos_info['unrealized_pnl']:.2f} ({pos_info['unrealized_pnl_pct']:.2f}%)"),
+        ]
+        for label, value in info_layout:
+            logger.info(f"{label:>12}: {value}")
+
+
 def main():
     parser = ArgumentParser(description="股票回测工具")
     parser.add_argument("symbol", help="股票代码")
@@ -1073,35 +1144,33 @@ def main():
 
         # 为每个参数组合打印详细结果
         for idx, result in enumerate(results["combinations"], 1):
-            params_str = ", ".join(f"{k}={v}" for k, v in result["params"].items())
-            print(f"\n\n{'='*20} 参数组合 {idx} {'='*20}")
-            print(f"参数: {params_str}")
+            params_str = ", ".join(
+                f"{k}={v}"
+                for k, v in result["params"].items()
+                if k
+                in [
+                    "ma_short",
+                    "ma_long",
+                    "chandelier_period",
+                    "chandelier_multiplier",
+                    "adr_period",
+                    "adr_multiplier",
+                ]
+            )
+            logger.info(f"\n\n{'='*20} 参数组合 {idx} {'='*20}")
+            logger.info(f"参数: {params_str}")
 
             # 获取完整回测结果
             full_result = result["full_result"]
             metrics = full_result["metrics"]
 
             # 打印性能指标
-            print("\n=== 性能指标 ===")
-            print(f"最新净值: {metrics['latest_nav']:.2f}")
-            print(f"年化收益率: {metrics['annual_return']:.2f}%")
-            print(f"总交易次数: {metrics['total_trades']}")
-            print(f"盈利交易: {metrics['won_trades']}")
-            print(f"亏损交易: {metrics['lost_trades']}")
-            print(f"胜率: {metrics['win_rate']:.2f}%")
-            print(f"盈亏比: {metrics['profit_factor']:.2f}")
-            print(f"平均盈利: {metrics['avg_won']:.2f}")
-            print(f"平均亏损: {metrics['avg_lost']:.2f}")
-            print(f"夏普比率: {metrics['sharpe_ratio']:.2f}")
-            print(f"最大回撤: {metrics['max_drawdown']:.2f}%")
-            print(f"当前回撤: {metrics['current_drawdown']:.2f}%")
-            print(f"Calmar比率: {metrics['calmar_ratio']:.2f}")
-            print(f"VWR: {metrics['vwr']:.2f}")
-            print(f"SQN: {metrics['sqn']:.2f}")
-            print(f"运行天数: {metrics['running_days']}")
+            _print_metrics(metrics)
+            _print_combination_result(idx, result)
+            _print_next_signal(full_result["next_signal"])
 
             # 打印交易记录
-            print("\n=== 交易记录 ===")
+            logger.info("\n=== 交易记录 ===")
             trades = full_result["all_trades"]
             if trades:
                 headers = [
@@ -1129,43 +1198,14 @@ def main():
                     ]
                     for trade in trades
                 ]
-                print(tabulate(table_data, headers=headers, tablefmt="grid"))
+                logger.info(tabulate(table_data, headers=headers, tablefmt="grid"))
             else:
-                print("没有交易记录")
+                logger.info("没有交易记录")
 
-            # 打印下一个交易信号
-            next_signal = full_result["next_signal"]
-            print("\n=== 下一交易日信号 ===")
-            print(f"建议动作: {next_signal['action']}")
-
-            if next_signal["position_info"]:
-                pos_info = next_signal["position_info"]
-                print("\n当前持仓信息:")
-                print(f"买入日期: {pos_info['entry_date']}")
-                print(f"买入价格: {pos_info['entry_price']:.3f}")
-                print(f"买入金额: {pos_info['position_value']:.2f}")
-                print(f"持仓数量: {pos_info['position_size']}")
-                print(f"当前价格: {pos_info['current_price']:.3f}")
-                print(f"当前市值: {pos_info['current_value']:.2f}")
-                print(
-                    f"浮动盈亏: {pos_info['unrealized_pnl']:.2f} ({pos_info['unrealized_pnl_pct']:.2f}%)"
-                )
-
-            if next_signal["conditions"]:
-                print("\n触发条件:")
-                for condition in next_signal["conditions"]:
-                    print(f"  - {condition}")
-
-            if next_signal["stop_loss"]:
-                stop_info = next_signal["stop_loss"]
-                print(f"\n{stop_info['type']}:")
-                print(f"止损价格: {stop_info['price']:.3f}")
-                print(f"止损距离: {stop_info['distance_pct']:.2f}%")
-
-            print("\n" + "=" * 50)  # 分隔线
+            logger.info("\n" + "=" * 50)  # 分隔线
 
         # 打印汇总表格
-        print("\n\n=== 参数组合汇总 ===")
+        logger.info("\n\n=== 参数组合汇总 ===")
         headers = [
             "参数组合",
             "年化收益率(%)",
@@ -1177,7 +1217,19 @@ def main():
         table_data = []
 
         for result in results["combinations"]:
-            params_str = ", ".join(f"{k}={v}" for k, v in result["params"].items())
+            params_str = ", ".join(
+                f"{k}={v}"
+                for k, v in result["params"].items()
+                if k
+                in [
+                    "ma_short",
+                    "ma_long",
+                    "chandelier_period",
+                    "chandelier_multiplier",
+                    "adr_period",
+                    "adr_multiplier",
+                ]
+            )
             table_data.append(
                 [
                     params_str,
@@ -1189,20 +1241,25 @@ def main():
                 ]
             )
 
-        print(tabulate(table_data, headers=headers, tablefmt="grid"))
+        # print(tabulate(table_data, headers=headers, tablefmt="grid"))
+        logger.info(
+            f"参数组合汇总: {tabulate(table_data, headers=headers, tablefmt='grid')}"
+        )
 
         # 打印最佳结果
-        print("\n=== 最佳年化收益率组合 ===")
+        logger.info("\n=== 最佳年化收益率组合 ===")
         best_return = results["best_annual_return"]
-        print(
-            f"参数: {', '.join(f'{k}={v}' for k, v in best_return['params'].items())}"
+        logger.info(
+            f"参数: {', '.join(f'{k}={v}' for k, v in best_return['params'].items() if k in ['ma_short', 'ma_long', 'chandelier_period', 'chandelier_multiplier', 'adr_period', 'adr_multiplier'])}"
         )
-        print(f"年化收益率: {best_return['annual_return']:.2f}%")
+        logger.info(f"年化收益率: {best_return['annual_return']:.2f}%")
 
-        print("\n=== 最小回撤组合 ===")
+        logger.info("\n=== 最小回撤组合 ===")
         min_dd = results["min_drawdown"]
-        print(f"参数: {', '.join(f'{k}={v}' for k, v in min_dd['params'].items())}")
-        print(f"最大回撤: {min_dd['max_drawdown']:.2f}%")
+        logger.info(
+            f"参数: {', '.join(f'{k}={v}' for k, v in min_dd['params'].items())}"
+        )
+        logger.info(f"最大回撤: {min_dd['max_drawdown']:.2f}%")
 
         # 如果需要通知，使用最佳年化收益率的结果
         if args.notify:
@@ -1236,33 +1293,19 @@ def main():
         )
 
         # 打印结果
-        print("\n=== 回测结果 ===")
-        print(f"初始资金: {results['initial_capital']:.2f}")
-        print(f"最终权益: {results['final_value']:.2f}")
-        print(f"总收益率: {results['total_return']:.2f}%")
+        logger.info("\n=== 回测结果 ===")
+        logger.info(f"初始资金: {results['initial_capital']:.2f}")
+        logger.info(f"最终权益: {results['final_value']:.2f}")
+        logger.info(f"总收益率: {results['total_return']:.2f}%")
 
         # 打印性能指标
         metrics = results["metrics"]
-        print("\n=== 性能指标 ===")
-        print(f"最新净值: {metrics['latest_nav']:.2f}")
-        print(f"年化收益率: {metrics['annual_return']:.2f}%")
-        print(f"总交易次数: {metrics['total_trades']}")
-        print(f"盈利交易: {metrics['won_trades']}")
-        print(f"亏损交易: {metrics['lost_trades']}")
-        print(f"胜率: {metrics['win_rate']:.2f}%")
-        print(f"盈亏比: {metrics['profit_factor']:.2f}")
-        print(f"平均盈利: {metrics['avg_won']:.2f}")
-        print(f"平均亏损: {metrics['avg_lost']:.2f}")
-        print(f"夏普比率: {metrics['sharpe_ratio']:.2f}")
-        print(f"最大回撤: {metrics['max_drawdown']:.2f}%")
-        print(f"当前回撤: {metrics['current_drawdown']:.2f}%")
-        print(f"Calmar比率: {metrics['calmar_ratio']:.2f}")
-        print(f"VWR: {metrics['vwr']:.2f}")
-        print(f"SQN: {metrics['sqn']:.2f}")
-        print(f"运行天数: {metrics['running_days']}")
+        _print_metrics(metrics)
+        _print_combination_result(1, results)
+        _print_next_signal(results["next_signal"])
 
         # 打印交易记录
-        print("\n=== 交易记录 ===")
+        logger.info("\n=== 交易记录 ===")
         trades = results["all_trades"]
         if trades:
             headers = [
@@ -1290,38 +1333,12 @@ def main():
                 ]
                 for trade in trades
             ]
-            print(tabulate(table_data, headers=headers, tablefmt="grid"))
-        else:
-            print("没有交易记录")
-
-        # 打印下一个交易信号
-        next_signal = results["next_signal"]
-        print("\n=== 下一交易日信号 ===")
-        print(f"建议动作: {next_signal['action']}")
-
-        if next_signal["position_info"]:
-            pos_info = next_signal["position_info"]
-            print("\n当前持仓信息:")
-            print(f"买入日期: {pos_info['entry_date']}")
-            print(f"买入价格: {pos_info['entry_price']:.3f}")
-            print(f"买入金额: {pos_info['position_value']:.2f}")
-            print(f"持仓数量: {pos_info['position_size']}")
-            print(f"当前价格: {pos_info['current_price']:.3f}")
-            print(f"当前市值: {pos_info['current_value']:.2f}")
-            print(
-                f"浮动盈亏: {pos_info['unrealized_pnl']:.2f} ({pos_info['unrealized_pnl_pct']:.2f}%)"
+            # print(tabulate(table_data, headers=headers, tablefmt="grid"))
+            logger.info(
+                f"交易记录: {tabulate(table_data, headers=headers, tablefmt='grid')}"
             )
-
-        if next_signal["conditions"]:
-            print("\n触发条件:")
-            for condition in next_signal["conditions"]:
-                print(f"  - {condition}")
-
-        if next_signal["stop_loss"]:
-            stop_info = next_signal["stop_loss"]
-            print(f"\n{stop_info['type']}:")
-            print(f"止损价格: {stop_info['price']:.3f}")
-            print(f"止损距离: {stop_info['distance_pct']:.2f}%")
+        else:
+            logger.info("没有交易记录")
 
         # 如果需要发送通知
         if args.notify:
