@@ -194,10 +194,11 @@
                     </ul>
                     {% endif %}
                     {% if result.next_signal.stop_loss %}
-                    <div class="metric-label"
-                        style="margin-top: 10px;">止损价</div>
-                    <div class="metric-value">{{
-                        "{:.3f}".format(result.next_signal.stop_loss) }}</div>
+                    <div class="metric-label" style="margin-top: 10px;">止损信息</div>
+                    <div class="metric-value">
+                        {{ result.next_signal.stop_loss.type }}: {{ "{:.3f}".format(result.next_signal.stop_loss.price) }}
+                        (距离: {{ "{:.2f}%".format(result.next_signal.stop_loss.distance_pct) }})
+                    </div>
                     {% endif %}
                 </div>
             </div>

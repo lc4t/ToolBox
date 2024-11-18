@@ -1104,11 +1104,11 @@ def _print_parameter_summary(combinations: List[dict]):
         "最后交易",
     ]
 
-    # 按年化收益率排序
+    # 按年化收益率排序（从低到高）
     sorted_combinations = sorted(
         combinations,
         key=lambda x: x['annual_return'],
-        reverse=True  # 降序排列
+        reverse=False  # 改为False，实现从低到高排序
     )
 
     table_data = []
