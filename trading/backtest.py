@@ -23,8 +23,8 @@ log_level = "INFO"
 logger.add(sys.stderr, level=log_level)
 logger.add(
     "logs/backtest.log",
-    level="DEBUG",
-    rotation="100MB",
+    level="INFO",
+    rotation="1000MB",
     compression="zip",
 )
 
@@ -803,7 +803,7 @@ class BacktestRunner:
         commission_rate: float = 0.0001,
         base_params: Dict = None,
         param_ranges: Dict = None,
-        max_workers: int = None,  # 如果为None，则使用CPU核心数
+        max_workers: int = None,
     ) -> Dict:
         """运行参数组合的回测"""
         # 在主进程中获取数据
@@ -845,7 +845,19 @@ class BacktestRunner:
         param_names = list(param_lists.keys())
         param_values = [param_lists[name] for name in param_names]
         combinations = list(product(*param_values))
-
+        
+        # 过滤无效的参数组合
+        valid_combinations = []
+        for combo in combinations:
+            params = dict(zip(param_names, combo))
+            # 检查均线参数
+            if 'ma_short' in params and 'ma_long' in params:
+                if params['ma_short'] >= params['ma_long']:
+                    continue
+            valid_combinations.append(combo)
+        
+        combinations = valid_combinations
+        
         # 准备基础配置
         base_config = {
             "df": df,  # 直接传递DataFrame
@@ -991,20 +1003,26 @@ def _print_combination_result(idx: int, result: dict):
     logger.info(f"{'参数组合 ' + str(idx):^{SEPARATOR_WIDTH}}")
     logger.info(SECTION_SEPARATOR)
 
+    # 构建参数字典
+    if "params" not in result:
+        # 单参数回测的情况
+        params = {
+            "use_ma": result.get("use_ma", False),
+            "short_period": result.get("short_period"),
+            "long_period": result.get("long_period"),
+            "use_chandelier": result.get("use_chandelier", False),
+            "chandelier_period": result.get("chandelier_period"),
+            "chandelier_multiplier": result.get("chandelier_multiplier"),
+            "use_adr": result.get("use_adr", False),
+            "adr_period": result.get("adr_period"),
+            "adr_multiplier": result.get("adr_multiplier"),
+        }
+    else:
+        # 参数组合回测的情况
+        params = result["params"]
+
     # 格式化参数字符串
-    params_str = ", ".join(
-        f"{k}={v}"
-        for k, v in result["params"].items()
-        if k
-        in [
-            "ma_short",
-            "ma_long",
-            "chandelier_period",
-            "chandelier_multiplier",
-            "adr_period",
-            "adr_multiplier",
-        ]
-    )
+    params_str = _format_params_string(params)
     logger.info(f"参数配置: {params_str}")
     logger.info(SUBSECTION_SEPARATOR)
 
@@ -1076,7 +1094,7 @@ def _print_trades(trades: List[dict], title: str = "交易记录"):
 
 def _print_parameter_summary(combinations: List[dict]):
     """格式化打印参数组合汇总"""
-    logger.info("\n=== 参数组合汇总 ===")
+    logger.info("\n=== 参数组合汇总（按年化收益率排序）===")
     headers = [
         "参数组合",
         "年化收益率(%)",
@@ -1086,17 +1104,24 @@ def _print_parameter_summary(combinations: List[dict]):
         "最后交易",
     ]
 
+    # 按年化收益率排序
+    sorted_combinations = sorted(
+        combinations,
+        key=lambda x: x['annual_return'],
+        reverse=True  # 降序排列
+    )
+
     table_data = []
-    for result in combinations:
-        params_str = _format_params_string(result["params"])
+    for result in sorted_combinations:
+        params_str = _format_params_string(result['params'])
         table_data.append(
             [
                 params_str,
                 f"{result['annual_return']:.2f}",
                 f"{result['max_drawdown']:.2f}",
-                result["total_trades"],
-                result["first_trade"],
-                result["last_trade"],
+                result['total_trades'],
+                result['first_trade'],
+                result['last_trade'],
             ]
         )
 
@@ -1104,16 +1129,22 @@ def _print_parameter_summary(combinations: List[dict]):
 
 
 def _format_params_string(params: dict) -> str:
-    """格式化参数字符串"""
-    relevant_params = [
-        "ma_short",
-        "ma_long",
-        "chandelier_period",
-        "chandelier_multiplier",
-        "adr_period",
-        "adr_multiplier",
-    ]
-    return ", ".join(f"{k}={v}" for k, v in params.items() if k in relevant_params)
+    """格式化参数字符串，只显示启用的参数"""
+    parts = []
+    
+    # 双均线参数
+    if params.get('use_ma'):
+        parts.append(f"MA={params['short_period']}/{params['long_period']}")
+    
+    # 吊灯止损参数
+    if params.get('use_chandelier'):
+        parts.append(f"ATR={params['chandelier_multiplier']}x{params['chandelier_period']}")
+    
+    # ADR止损参数
+    if params.get('use_adr'):
+        parts.append(f"ADR={params['adr_multiplier']}x{params['adr_period']}")
+    
+    return ", ".join(parts)
 
 
 def _print_best_results(results: dict):
@@ -1310,16 +1341,14 @@ def main():
         # 原有的单次回测逻辑
         strategy_params = {
             "use_ma": args.use_ma,
-            "short_period": int(float(args.ma_short)),  # 确保是整数
-            "long_period": int(float(args.ma_long)),  # 确保是整数
+            "short_period": int(float(args.ma_short)),
+            "long_period": int(float(args.ma_long)),
             "use_chandelier": args.use_chandelier,
-            "chandelier_period": int(float(args.chandelier_period)),  # 确保是整数
-            "chandelier_multiplier": float(
-                args.chandelier_multiplier
-            ),  # 这个可以是浮点数
+            "chandelier_period": int(float(args.chandelier_period)),
+            "chandelier_multiplier": float(args.chandelier_multiplier),
             "use_adr": args.use_adr,
-            "adr_period": int(float(args.adr_period)),  # 确保是整数
-            "adr_multiplier": float(args.adr_multiplier),  # 这个可以是浮点数
+            "adr_period": int(float(args.adr_period)),
+            "adr_multiplier": float(args.adr_multiplier),
             "trade_start_time": args.trade_start_time,
             "trade_end_time": args.trade_end_time,
             "position_size": args.position_size,
@@ -1331,8 +1360,11 @@ def main():
             end_date=datetime.strptime(args.end_date, "%Y-%m-%d"),
             initial_capital=args.initial_capital,
             commission_rate=args.commission_rate,
-            **strategy_params,
+            **strategy_params
         )
+
+        # 将策略参数添加到结果中
+        results.update(strategy_params)
 
         # 打印结果
         logger.info("\n=== 回测结果 ===")
