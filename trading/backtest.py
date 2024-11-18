@@ -3,6 +3,8 @@ from argparse import ArgumentParser
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
+from itertools import product
+import re
 
 import backtrader as bt
 import numpy as np
@@ -12,6 +14,8 @@ from loguru import logger
 from notify import NotifyManager, create_backtest_result
 from tabulate import tabulate
 from analyzers import PerformanceAnalyzer
+from concurrent.futures import ProcessPoolExecutor, as_completed
+import multiprocessing
 
 
 @dataclass
@@ -224,7 +228,7 @@ class DualMAStrategy(bt.Strategy):
                     f"\n   - 卖出价格: {sell_price:.4f}"
                     f"\n   - 卖出数: {sell_size}"
                     f"\n   - 卖出金额: {sell_value:.4f}"
-                    f"\n   - 卖出手续费: {sell_commission:.4f}"
+                    f"\n   - 卖出手续: {sell_commission:.4f}"
                     f"\n3. 算:"
                     f"\n   - 交易差价: {sell_value - buy_value:.4f} (卖出金额 - 买入金额)"
                     f"\n   - 总手续费: {total_commission:.4f} (买入手续费 + 卖出手续费)"
@@ -566,6 +570,265 @@ class BacktestRunner:
 
         return signal
 
+    @staticmethod
+    def _run_single_combination(params: Dict, base_config: Dict) -> Dict:
+        """运行单个参数组合的回测
+        
+        Args:
+            params: 参数组合
+            base_config: 基础配置（包含df, initial_capital等）
+        """
+        try:
+            # 创建回测引擎
+            cerebro = bt.Cerebro()
+            
+            # 添加数据
+            data_feed = bt.feeds.PandasData(
+                dataname=base_config['df'],
+                datetime=None,
+                open="open_price",
+                high="high",
+                low="low",
+                close="close_price",
+                volume="volume",
+                openinterest=-1,
+            )
+            cerebro.adddata(data_feed)
+            
+            # 设置初始资金和手续费
+            cerebro.broker.setcash(base_config['initial_capital'])
+            cerebro.broker.setcommission(commission=base_config['commission_rate'])
+            
+            # 添加策略
+            cerebro.addstrategy(DualMAStrategy, **params)
+            
+            # 添加分析器
+            cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name="sharpe")
+            cerebro.addanalyzer(bt.analyzers.DrawDown, _name="drawdown")
+            cerebro.addanalyzer(bt.analyzers.TradeAnalyzer, _name="trades")
+            cerebro.addanalyzer(bt.analyzers.VWR, _name="vwr")
+            
+            # 运行回测
+            results = cerebro.run()
+            strat = results[0]
+            
+            # 生成回测报告
+            final_value = cerebro.broker.getvalue()
+            result = {
+                'initial_capital': base_config['initial_capital'],
+                'final_value': final_value,
+                'total_return': ((final_value / base_config['initial_capital']) - 1) * 100,
+                'metrics': PerformanceAnalyzer.calculate_metrics(
+                    base_config['initial_capital'],
+                    final_value,
+                    strat.trade_records,
+                    {
+                        'trades': strat.analyzers.trades.get_analysis(),
+                        'sharpe': strat.analyzers.sharpe.get_analysis(),
+                        'drawdown': strat.analyzers.drawdown.get_analysis(),
+                        'vwr': strat.analyzers.vwr.get_analysis(),
+                    }
+                ),
+                'all_trades': [
+                    {
+                        "date": t.date.strftime("%Y-%m-%d %H:%M:%S"),
+                        "action": t.action,
+                        "price": t.price,
+                        "size": t.size,
+                        "value": t.value,
+                        "commission": t.commission,
+                        "pnl": t.pnl,
+                        "total_value": t.total_value,
+                        "signal_reason": t.signal_reason,
+                        "cash": t.cash,
+                    }
+                    for t in strat.trade_records
+                ],
+                'next_signal': BacktestRunner._predict_next_signal(strat),
+                'last_trade_date': strat.data.datetime.datetime(),
+            }
+            
+            return {
+                'params': params,
+                'annual_return': result['metrics']['annual_return'],
+                'max_drawdown': result['metrics']['max_drawdown'],
+                'total_trades': result['metrics']['total_trades'],
+                'first_trade': result['all_trades'][0]['date'] if result['all_trades'] else None,
+                'last_trade': result['all_trades'][-1]['date'] if result['all_trades'] else None,
+                'full_result': result
+            }
+        except Exception as e:
+            logger.error(f"回测失败，参数: {params}, 错误: {str(e)}")
+            return None
+
+    @staticmethod
+    def _predict_next_signal(strat) -> Dict:
+        """预测下一个交易信号"""
+        current_position = bool(strat.position)
+        
+        # 获取最新的技术指标数据
+        short_ma = strat.short_ma[0]
+        long_ma = strat.long_ma[0]
+        prev_short_ma = strat.short_ma[-1]
+        prev_long_ma = strat.long_ma[-1]
+        
+        signal = {
+            "action": "观察",  # 默认动作
+            "conditions": [],
+            "stop_loss": None
+        }
+
+        if not current_position:
+            # 检查买入条件
+            if strat.signal_calculator.check_ma_signal(
+                short_ma, long_ma, prev_short_ma, prev_long_ma
+            ):
+                signal["action"] = "买入"
+                signal["conditions"].append(
+                    f"MA{strat.params.short_period}({short_ma:.2f}) > "
+                    f"MA{strat.params.long_period}({long_ma:.2f})"
+                )
+                
+                # 添加止损条件
+                if strat.params.use_chandelier:
+                    stop_price = strat.highest[0] - (strat.params.chandelier_multiplier * strat.atr[0])
+                    signal["stop_loss"] = f"吊灯止损价: {stop_price:.2f}"
+                
+                if strat.params.use_adr:
+                    stop_price = strat.data.close[0] - (strat.params.adr_multiplier * strat.adr[0])
+                    signal["stop_loss"] = f"ADR止损价: {stop_price:.2f}"
+        
+        else:
+            # 检查卖出条件
+            should_exit, exit_reason = strat._calculate_exit_signals()
+            if should_exit:
+                signal["action"] = "卖出"
+                signal["conditions"].append(exit_reason)
+
+        return signal
+
+    def run_parameter_combinations(
+        self,
+        symbol: str,
+        start_date: datetime,
+        end_date: datetime,
+        initial_capital: float = 100000.0,
+        commission_rate: float = 0.0001,
+        base_params: Dict = None,
+        param_ranges: Dict = None,
+        max_workers: int = None,  # 如果为None，则使用CPU核心数
+    ) -> Dict:
+        """运行参数组合的回测"""
+        # 在主进程中获取数据
+        data = self.db_client.query_by_symbol_and_date_range(
+            symbol, start_date, end_date
+        )
+        
+        if not data:
+            raise ValueError(f"No data available for {symbol}")
+        
+        # 准备DataFrame
+        df = pd.DataFrame(data)
+        df["date"] = pd.to_datetime(df["date"])
+        df.set_index("date", inplace=True)
+        
+        # 参数名称映射
+        param_name_map = {
+            'ma_short': 'short_period',
+            'ma_long': 'long_period',
+            'chandelier_period': 'chandelier_period',
+            'chandelier_multiplier': 'chandelier_multiplier',
+            'adr_period': 'adr_period',
+            'adr_multiplier': 'adr_multiplier'
+        }
+        
+        # 生成参数组合
+        param_lists = {}
+        for param, value_range in param_ranges.items():
+            if param in ['ma_short', 'ma_long', 'adr_period']:
+                values = parse_range(value_range, 1.0)
+                param_lists[param] = [int(v) for v in values]
+            elif param == 'chandelier_period':
+                values = parse_range(value_range, 5.0)
+                param_lists[param] = [int(v) for v in values]
+            elif param in ['chandelier_multiplier', 'adr_multiplier']:
+                param_lists[param] = parse_range(value_range, 0.1)
+        
+        # 生成所有可能的参数组合
+        param_names = list(param_lists.keys())
+        param_values = [param_lists[name] for name in param_names]
+        combinations = list(product(*param_values))
+        
+        # 准备基础配置
+        base_config = {
+            'df': df,  # 直接传递DataFrame
+            'initial_capital': initial_capital,
+            'commission_rate': commission_rate,
+        }
+        
+        # 设置并行进程数
+        if max_workers is None:
+            max_workers = multiprocessing.cpu_count()
+        
+        # 存储所有回测结果
+        all_results = []
+        total_combinations = len(combinations)
+        
+        logger.info(f"开始并行回测，共 {total_combinations} 个参数组合，使用 {max_workers} 个进程")
+        
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+            # 提交所有任务
+            future_to_params = {}
+            for combo in combinations:
+                params = base_params.copy()
+                # 使用参数名称映射转换参数名
+                for name, value in zip(param_names, combo):
+                    strategy_param_name = param_name_map.get(name, name)
+                    params[strategy_param_name] = value
+                
+                future = executor.submit(self._run_single_combination, params, base_config)
+                future_to_params[future] = params
+            
+            # 处理完成的任务
+            completed = 0
+            for future in as_completed(future_to_params):
+                completed += 1
+                params = future_to_params[future]
+                try:
+                    result = future.result()
+                    if result is not None:
+                        all_results.append(result)
+                    # 打印进度
+                    logger.info(f"进度: {completed}/{total_combinations} "
+                              f"({(completed/total_combinations*100):.1f}%)")
+                except Exception as e:
+                    logger.error(f"参数组合运行失败: {params}")
+                    logger.error(f"错误信息: {str(e)}")
+        
+        if not all_results:
+            raise ValueError("所有参数组合都运行失败")
+        
+        return {
+            'combinations': all_results,
+            'best_annual_return': max(all_results, key=lambda x: x['annual_return']),
+            'min_drawdown': min(all_results, key=lambda x: x['max_drawdown']),
+            'param_ranges': param_ranges
+        }
+
+
+def parse_range(value: str, step: float = 1.0) -> List[float]:
+    """解范围参数
+    
+    Examples:
+        "5" -> [5]
+        "5-10" -> [5, 6, 7, 8, 9, 10]
+    """
+    if '-' not in value:
+        return [float(value)]
+    
+    start, end = map(float, value.split('-'))
+    return [round(x * step, 1) for x in range(int(start/step), int(end/step) + 1)]
+
 
 def main():
     parser = ArgumentParser(description="股票回测工具")
@@ -593,17 +856,15 @@ def main():
     )
 
     # 策略参数
-    parser.add_argument("--use-ma", action="store_true", help="使用双均线策略")
-    parser.add_argument("--ma-short", type=int, default=5, help="短期均线周期")
-    parser.add_argument("--ma-long", type=int, default=20, help="长期均线周期")
+    parser.add_argument("--use-ma", action="store_true", help="使用双均线策")
+    parser.add_argument("--ma-short", type=str, default="5", help="短期均线周期，支持范围，如5-10")
+    parser.add_argument("--ma-long", type=str, default="20", help="长期均线周期，支持范围，如15-30")
     parser.add_argument("--use-chandelier", action="store_true", help="使用吊灯止损")
-    parser.add_argument("--chandelier-period", type=int, default=22, help="ATR周期")
-    parser.add_argument(
-        "--chandelier-multiplier", type=float, default=3.0, help="ATR乘数"
-    )
+    parser.add_argument("--chandelier-period", type=str, default="22", help="ATR周期，支持范围，如20-25")
+    parser.add_argument("--chandelier-multiplier", type=str, default="3.0", help="ATR乘数，支持范围，如2.5-4.0")
     parser.add_argument("--use-adr", action="store_true", help="使用ADR止损")
-    parser.add_argument("--adr-period", type=int, default=20, help="ADR周期")
-    parser.add_argument("--adr-multiplier", type=float, default=1.0, help="ADR乘数")
+    parser.add_argument("--adr-period", type=str, default="20", help="ADR周期，支持范围，如15-25")
+    parser.add_argument("--adr-multiplier", type=str, default="1.0", help="ADR乘数，支持范围，如0.5-2.0")
 
     # 添加交易时间控制参数
     parser.add_argument(
@@ -633,141 +894,291 @@ def main():
         help="跳过所有确认"
     )
 
-    args = parser.parse_args()
-
-    # 准备策略参数
-    strategy_params = {
-        "use_ma": args.use_ma,
-        "short_period": args.ma_short,
-        "long_period": args.ma_long,
-        "use_chandelier": args.use_chandelier,
-        "chandelier_period": args.chandelier_period,
-        "chandelier_multiplier": args.chandelier_multiplier,
-        "use_adr": args.use_adr,
-        "adr_period": args.adr_period,
-        "adr_multiplier": args.adr_multiplier,
-        "trade_start_time": args.trade_start_time,
-        "trade_end_time": args.trade_end_time,
-    }
-
-    # 运行回测
-    runner = BacktestRunner(DBClient())
-    results = runner.run(
-        symbol=args.symbol,
-        start_date=datetime.strptime(args.start_date, "%Y-%m-%d"),
-        end_date=datetime.strptime(args.end_date, "%Y-%m-%d"),
-        initial_capital=args.initial_capital,
-        commission_rate=args.commission_rate,
-        **strategy_params,
+    # 添加并行进程数参数
+    parser.add_argument(
+        "--workers",
+        type=int,
+        help="并行进程数，默认使用CPU核心数",
     )
 
-    # 打印结果
-    print("\n=== 回测结果 ===")
-    print(f"初始资金: {results['initial_capital']:.2f}")
-    print(f"最终权益: {results['final_value']:.2f}")
-    print(f"总收益率: {results['total_return']:.2f}%")
-
-    # 打印性能指标
-    metrics = results['metrics']
-    print("\n=== 性能指标 ===")
-    print(f"最新净值: {metrics['latest_nav']:.2f}")
-    print(f"年化收益率: {metrics['annual_return']:.2f}%")
-    print(f"总交易次数: {metrics['total_trades']}")
-    print(f"盈利交易: {metrics['won_trades']}")
-    print(f"亏损交易: {metrics['lost_trades']}")
-    print(f"胜率: {metrics['win_rate']:.2f}%")
-    print(f"盈亏比: {metrics['profit_factor']:.2f}")
-    print(f"平均盈利: {metrics['avg_won']:.2f}")
-    print(f"平均亏损: {metrics['avg_lost']:.2f}")
-    print(f"夏普比率: {metrics['sharpe_ratio']:.2f}")
-    print(f"最大回撤: {metrics['max_drawdown']:.2f}%")
-    print(f"当前回撤: {metrics['current_drawdown']:.2f}%")
-    print(f"Calmar比率: {metrics['calmar_ratio']:.2f}")
-    print(f"VWR: {metrics['vwr']:.2f}")
-    print(f"SQN: {metrics['sqn']:.2f}")
-    print(f"运行天数: {metrics['running_days']}")
-    if metrics['start_date']:
-        print(f"开始日期: {metrics['start_date'].strftime('%Y-%m-%d')}")
-        print(f"结束日期: {metrics['end_date'].strftime('%Y-%m-%d')}")
-
-    # 打印所有交易记录
-    print("\n=== 所有交易记录 ===")
-    trades = results['all_trades']  # 使用所有交易记录
-    if trades:
-        headers = ["日期", "动作", "价格", "数量", "交易额", "手续费", "盈亏", "总资产", "信号原因"]
-        table_data = [
-            [
-                trade["date"],
-                trade["action"],
-                f"{trade['price']:.3f}",
-                trade["size"],
-                f"{trade['value']:.2f}",
-                f"{trade['commission']:.2f}",
-                f"{trade['pnl']:.2f}",
-                f"{trade['total_value']:.2f}",
-                trade["signal_reason"],
-            ]
-            for trade in trades
-        ]
-        print(tabulate(table_data, headers=headers, tablefmt="grid"))
-    else:
-        print("没有交易记录")
-
-    # 打印下一个交易信号
-    next_signal = results['next_signal']
-    print("\n=== 下一交易日信号 ===")
-    print(f"建议动作: {next_signal['action']}")
-    if next_signal['conditions']:
-        print("触发条件:")
-        for condition in next_signal['conditions']:
-            print(f"  - {condition}")
-    if next_signal['stop_loss']:
-        print(f"止损条件: {next_signal['stop_loss']}")
-
-    # 创建邮件内容并打印
-    if args.notify:
-        notify_methods = []
-        if args.notify in ["email", "all"] and args.email_to:
-            os.environ["EMAIL_RECIPIENTS"] = args.email_to
-            notify_methods.append("email")
-        if args.notify in ["wecom", "all"]:
-            notify_methods.append("wecom")
-
-        if notify_methods:
-            notify_manager = NotifyManager(notify_methods)
-            backtest_result = create_backtest_result(
-                results,
-                {
-                    "symbol": args.symbol,
-                    "start_date": datetime.strptime(args.start_date, "%Y-%m-%d"),
-                    "end_date": datetime.strptime(args.end_date, "%Y-%m-%d"),
-                    "use_ma": args.use_ma,
-                    "ma_short": args.ma_short,
-                    "ma_long": args.ma_long,
-                    "use_chandelier": args.use_chandelier,
-                    "chandelier_period": args.chandelier_period,
-                    "chandelier_multiplier": args.chandelier_multiplier,
-                    "use_adr": args.use_adr,
-                    "adr_period": args.adr_period,
-                    "adr_multiplier": args.adr_multiplier,
-                },
-            )
+    args = parser.parse_args()
+    
+    # 检查是否有范围参数
+    has_ranges = any('-' in str(getattr(args, param)) for param in [
+        'ma_short', 'ma_long', 'chandelier_period', 
+        'chandelier_multiplier', 'adr_period', 'adr_multiplier'
+    ])
+    
+    runner = BacktestRunner(DBClient())
+    
+    if has_ranges:
+        # 准备基础参数
+        base_params = {
+            "use_ma": args.use_ma,
+            "use_chandelier": args.use_chandelier,
+            "use_adr": args.use_adr,
+            "trade_start_time": args.trade_start_time,
+            "trade_end_time": args.trade_end_time,
+        }
+        
+        # 准备范围参数
+        param_ranges = {}
+        if args.use_ma:
+            param_ranges.update({
+                'ma_short': args.ma_short,
+                'ma_long': args.ma_long,
+            })
+        if args.use_chandelier:
+            param_ranges.update({
+                'chandelier_period': args.chandelier_period,
+                'chandelier_multiplier': args.chandelier_multiplier,
+            })
+        if args.use_adr:
+            param_ranges.update({
+                'adr_period': args.adr_period,
+                'adr_multiplier': args.adr_multiplier,
+            })
             
-            # 打印邮件内容预览
-            print("\n=== 邮件内容预览 ===")
-            print(notify_manager.get_message_preview(backtest_result))
+        # 运行参数组合回测
+        results = runner.run_parameter_combinations(
+            symbol=args.symbol,
+            start_date=datetime.strptime(args.start_date, "%Y-%m-%d"),
+            end_date=datetime.strptime(args.end_date, "%Y-%m-%d"),
+            initial_capital=args.initial_capital,
+            commission_rate=args.commission_rate,
+            base_params=base_params,
+            param_ranges=param_ranges,
+            max_workers=args.workers,  # 添加这个参数
+        )
+        
+        # 为每个参数组合打印详细结果
+        for idx, result in enumerate(results['combinations'], 1):
+            params_str = ', '.join(f"{k}={v}" for k, v in result['params'].items())
+            print(f"\n\n{'='*20} 参数组合 {idx} {'='*20}")
+            print(f"参数: {params_str}")
             
-            # 如果没有使用 -y 参数，询问确认
-            if not args.yes:
-                confirm = input("是否发送邮件？(y/N) ")
-                if confirm.lower() != 'y':
-                    logger.info("取消发送邮件")
-                    return
+            # 获取完整回测结果
+            full_result = result['full_result']
+            metrics = full_result['metrics']
             
-            if notify_manager.send_report(backtest_result):
-                logger.info("Report sent successfully")
+            # 打印性能指标
+            print("\n=== 性能指标 ===")
+            print(f"最新净值: {metrics['latest_nav']:.2f}")
+            print(f"年化收益率: {metrics['annual_return']:.2f}%")
+            print(f"总交易次数: {metrics['total_trades']}")
+            print(f"盈利交易: {metrics['won_trades']}")
+            print(f"亏损交易: {metrics['lost_trades']}")
+            print(f"胜率: {metrics['win_rate']:.2f}%")
+            print(f"盈亏比: {metrics['profit_factor']:.2f}")
+            print(f"平均盈利: {metrics['avg_won']:.2f}")
+            print(f"平均亏损: {metrics['avg_lost']:.2f}")
+            print(f"夏普比率: {metrics['sharpe_ratio']:.2f}")
+            print(f"最大回撤: {metrics['max_drawdown']:.2f}%")
+            print(f"当前回撤: {metrics['current_drawdown']:.2f}%")
+            print(f"Calmar比率: {metrics['calmar_ratio']:.2f}")
+            print(f"VWR: {metrics['vwr']:.2f}")
+            print(f"SQN: {metrics['sqn']:.2f}")
+            print(f"运行天数: {metrics['running_days']}")
+            
+            # 打印交易记录
+            print("\n=== 交易记录 ===")
+            trades = full_result['all_trades']
+            if trades:
+                headers = ["日期", "动作", "价格", "数量", "交易额", "手续费", "盈亏", "总资产", "信号原因"]
+                table_data = [
+                    [
+                        trade["date"],
+                        trade["action"],
+                        f"{trade['price']:.3f}",
+                        trade["size"],
+                        f"{trade['value']:.2f}",
+                        f"{trade['commission']:.2f}",
+                        f"{trade['pnl']:.2f}",
+                        f"{trade['total_value']:.2f}",
+                        trade["signal_reason"],
+                    ]
+                    for trade in trades
+                ]
+                print(tabulate(table_data, headers=headers, tablefmt="grid"))
             else:
-                logger.error("Failed to send report")
+                print("没有交易记录")
+            
+            # 打印下一个交易信号
+            next_signal = full_result['next_signal']
+            print("\n=== 下一交易日信号 ===")
+            print(f"建议动作: {next_signal['action']}")
+            if next_signal['conditions']:
+                print("触发条件:")
+                for condition in next_signal['conditions']:
+                    print(f"  - {condition}")
+            if next_signal['stop_loss']:
+                print(f"止损条件: {next_signal['stop_loss']}")
+            
+            print("\n" + "="*50)  # 分隔线
+        
+        # 打印汇总表格
+        print("\n\n=== 参数组合汇总 ===")
+        headers = ['参数组合', '年化收益率(%)', '最大回撤(%)', '交易次数', '首次交易', '最后交易']
+        table_data = []
+        
+        for result in results['combinations']:
+            params_str = ', '.join(f"{k}={v}" for k, v in result['params'].items())
+            table_data.append([
+                params_str,
+                f"{result['annual_return']:.2f}",
+                f"{result['max_drawdown']:.2f}",
+                result['total_trades'],
+                result['first_trade'],
+                result['last_trade']
+            ])
+            
+        print(tabulate(table_data, headers=headers, tablefmt="grid"))
+        
+        # 打印最佳结果
+        print("\n=== 最佳年化收益率组合 ===")
+        best_return = results['best_annual_return']
+        print(f"参数: {', '.join(f'{k}={v}' for k, v in best_return['params'].items())}")
+        print(f"年化收益率: {best_return['annual_return']:.2f}%")
+        
+        print("\n=== 最小回撤组合 ===")
+        min_dd = results['min_drawdown']
+        print(f"参数: {', '.join(f'{k}={v}' for k, v in min_dd['params'].items())}")
+        print(f"最大回撤: {min_dd['max_drawdown']:.2f}%")
+        
+        # 如果需要通知，使用最佳年化收益率的结果
+        if args.notify:
+            results = best_return['full_result']
+    else:
+        # 原有的单次回测逻辑
+        strategy_params = {
+            "use_ma": args.use_ma,
+            "short_period": int(float(args.ma_short)),  # 确保是整数
+            "long_period": int(float(args.ma_long)),    # 确保是整数
+            "use_chandelier": args.use_chandelier,
+            "chandelier_period": int(float(args.chandelier_period)),  # 确保是整数
+            "chandelier_multiplier": float(args.chandelier_multiplier),  # 这个可以是浮点数
+            "use_adr": args.use_adr,
+            "adr_period": int(float(args.adr_period)),  # 确保是整数
+            "adr_multiplier": float(args.adr_multiplier),  # 这个可以是浮点数
+            "trade_start_time": args.trade_start_time,
+            "trade_end_time": args.trade_end_time,
+            "position_size": args.position_size,
+        }
+
+        results = runner.run(
+            symbol=args.symbol,
+            start_date=datetime.strptime(args.start_date, "%Y-%m-%d"),
+            end_date=datetime.strptime(args.end_date, "%Y-%m-%d"),
+            initial_capital=args.initial_capital,
+            commission_rate=args.commission_rate,
+            **strategy_params
+        )
+
+        # 打印结果
+        print("\n=== 回测结果 ===")
+        print(f"初始资金: {results['initial_capital']:.2f}")
+        print(f"最终权益: {results['final_value']:.2f}")
+        print(f"总收益率: {results['total_return']:.2f}%")
+
+        # 打印性能指标
+        metrics = results['metrics']
+        print("\n=== 性能指标 ===")
+        print(f"最新净值: {metrics['latest_nav']:.2f}")
+        print(f"年化收益率: {metrics['annual_return']:.2f}%")
+        print(f"总交易次数: {metrics['total_trades']}")
+        print(f"盈利交易: {metrics['won_trades']}")
+        print(f"亏损交易: {metrics['lost_trades']}")
+        print(f"胜率: {metrics['win_rate']:.2f}%")
+        print(f"盈亏比: {metrics['profit_factor']:.2f}")
+        print(f"平均盈利: {metrics['avg_won']:.2f}")
+        print(f"平均亏损: {metrics['avg_lost']:.2f}")
+        print(f"夏普比率: {metrics['sharpe_ratio']:.2f}")
+        print(f"最大回撤: {metrics['max_drawdown']:.2f}%")
+        print(f"当前回撤: {metrics['current_drawdown']:.2f}%")
+        print(f"Calmar比率: {metrics['calmar_ratio']:.2f}")
+        print(f"VWR: {metrics['vwr']:.2f}")
+        print(f"SQN: {metrics['sqn']:.2f}")
+        print(f"运行天数: {metrics['running_days']}")
+
+        # 打印交易记录
+        print("\n=== 交易记录 ===")
+        trades = results['all_trades']
+        if trades:
+            headers = ["日期", "动作", "价格", "数量", "交易额", "手续费", "盈亏", "总资产", "信号原因"]
+            table_data = [
+                [
+                    trade["date"],
+                    trade["action"],
+                    f"{trade['price']:.3f}",
+                    trade["size"],
+                    f"{trade['value']:.2f}",
+                    f"{trade['commission']:.2f}",
+                    f"{trade['pnl']:.2f}",
+                    f"{trade['total_value']:.2f}",
+                    trade["signal_reason"],
+                ]
+                for trade in trades
+            ]
+            print(tabulate(table_data, headers=headers, tablefmt="grid"))
+        else:
+            print("没有交易记录")
+
+        # 打印下一个交易信号
+        next_signal = results['next_signal']
+        print("\n=== 下一交易日信号 ===")
+        print(f"建议动作: {next_signal['action']}")
+        if next_signal['conditions']:
+            print("触发条件:")
+            for condition in next_signal['conditions']:
+                print(f"  - {condition}")
+        if next_signal['stop_loss']:
+            print(f"止损条件: {next_signal['stop_loss']}")
+
+        # 如果需要发送通知
+        if args.notify:
+            notify_methods = []
+            if args.notify in ["email", "all"] and args.email_to:
+                os.environ["EMAIL_RECIPIENTS"] = args.email_to
+                notify_methods.append("email")
+            if args.notify in ["wecom", "all"]:
+                notify_methods.append("wecom")
+
+            if notify_methods:
+                notify_manager = NotifyManager(notify_methods)
+                backtest_result = create_backtest_result(
+                    results,
+                    {
+                        "symbol": args.symbol,
+                        "start_date": datetime.strptime(args.start_date, "%Y-%m-%d"),
+                        "end_date": datetime.strptime(args.end_date, "%Y-%m-%d"),
+                        "use_ma": args.use_ma,
+                        "ma_short": args.ma_short,
+                        "ma_long": args.ma_long,
+                        "use_chandelier": args.use_chandelier,
+                        "chandelier_period": args.chandelier_period,
+                        "chandelier_multiplier": args.chandelier_multiplier,
+                        "use_adr": args.use_adr,
+                        "adr_period": args.adr_period,
+                        "adr_multiplier": args.adr_multiplier,
+                    },
+                )
+                
+                # 打印邮件内容预览
+                print("\n=== 邮件内容预览 ===")
+                print(notify_manager.get_message_preview(backtest_result))
+                
+                # 如果没有使用 -y 参数，询问确认
+                if not args.yes:
+                    confirm = input("是否发送邮件？(y/N) ")
+                    if confirm.lower() != 'y':
+                        logger.info("取消发送邮件")
+                        return
+                
+                if notify_manager.send_report(backtest_result):
+                    logger.info("Report sent successfully")
+                else:
+                    logger.error("Failed to send report")
+
 
 if __name__ == "__main__":
     main()

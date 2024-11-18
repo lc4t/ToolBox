@@ -326,3 +326,8 @@ class DBClient:
         except SQLAlchemyError as e:
             logger.error(f"Error getting latest date for {symbol}: {e}")
             return None
+
+    def close(self):
+        """关闭数据库连接"""
+        if hasattr(self, 'engine'):
+            self.engine.dispose()
