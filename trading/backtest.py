@@ -1,6 +1,7 @@
 import multiprocessing
 import os
 import re
+import sys
 from argparse import ArgumentParser
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -16,6 +17,16 @@ from db import DBClient
 from loguru import logger
 from notify import NotifyManager, create_backtest_result
 from tabulate import tabulate
+
+logger.remove()  # 移除默认的处理器
+log_level = "INFO"
+logger.add(sys.stderr, level=log_level)
+logger.add(
+    "logs/backtest.log",
+    level="DEBUG",
+    rotation="100MB",
+    compression="zip",
+)
 
 
 @dataclass
@@ -191,7 +202,7 @@ class DualMAStrategy(bt.Strategy):
                 )
 
                 # 打印详细日志
-                logger.info(
+                logger.debug(
                     f"Buy Executed - Price: {order.executed.price:.3f}, "
                     f"Size: {size}, "
                     f"Value: {position_value:.2f}, "
@@ -217,7 +228,7 @@ class DualMAStrategy(bt.Strategy):
                 pnl = (sell_value - buy_value) - total_commission
 
                 # 打印详细的计算过程
-                logger.info(
+                logger.debug(
                     f"\n盈亏计算过程:"
                     f"\n1. 买入详情:"
                     f"\n   - 买入价格: {buy_price:.4f}"
@@ -229,7 +240,7 @@ class DualMAStrategy(bt.Strategy):
                     f"\n   - 卖出数: {sell_size}"
                     f"\n   - 卖出金额: {sell_value:.4f}"
                     f"\n   - 卖出手续: {sell_commission:.4f}"
-                    f"\n3. 算:"
+                    f"\n3. 计算:"
                     f"\n   - 交易差价: {sell_value - buy_value:.4f} (卖出金额 - 买入金额)"
                     f"\n   - 总手续费: {total_commission:.4f} (买入手续费 + 卖出手续费)"
                     f"\n   - 最终盈亏: {pnl:.4f} (交易差价 - 总手续费)"
@@ -325,7 +336,7 @@ class DualMAStrategy(bt.Strategy):
                 if size > 0:
                     self.order = self.buy(size=size)
                     self._last_signal_reason = "MA Cross Buy"
-                    logger.info(
+                    logger.debug(
                         f"Buy Order Created - Price: {self.data.close[0]:.2f}, "
                         f"Size: {size}"
                     )
@@ -334,7 +345,7 @@ class DualMAStrategy(bt.Strategy):
             if should_exit:
                 self.order = self.sell(size=self.position.size)
                 self._last_signal_reason = exit_reason
-                logger.info(
+                logger.debug(
                     f"Sell Order Created - Price: {self.data.close[0]:.2f}, "
                     f"Size: {self.position.size}, "
                     f"Reason: {exit_reason}"
@@ -373,6 +384,89 @@ class DualMAStrategy(bt.Strategy):
                 f"止损价={stop_price:.3f}]"
             )
         return signal_type
+
+    def _predict_next_signal(self) -> Dict:
+        """预测下一个交易信号"""
+        current_position = bool(self.position)
+
+        signal = {
+            "action": "观察",  # 默认动作
+            "conditions": [],
+            "stop_loss": None,
+            "position_info": None,  # 添加持仓信息字段
+        }
+
+        # 获取最新的技术指标数据
+        short_ma = self.short_ma[0]
+        long_ma = self.long_ma[0]
+        prev_short_ma = self.short_ma[-1]
+        prev_long_ma = self.long_ma[-1]
+
+        if current_position:
+            # 如果有持仓，获取最近的买入记录
+            last_buy = next(
+                (t for t in reversed(self.trade_records) if t.action == "BUY"), None
+            )
+            if last_buy:
+                signal["action"] = "持有"
+                signal["position_info"] = {
+                    "entry_date": last_buy.date.strftime("%Y-%m-%d %H:%M:%S"),
+                    "entry_price": last_buy.price,
+                    "position_size": last_buy.size,
+                    "position_value": last_buy.value,  # 买入金额
+                    "current_price": self.data.close[0],
+                    "current_value": self.data.close[0] * last_buy.size,  # 当前市值
+                    "unrealized_pnl": (self.data.close[0] - last_buy.price)
+                    * last_buy.size,
+                    "unrealized_pnl_pct": ((self.data.close[0] / last_buy.price) - 1)
+                    * 100,
+                }
+
+            # 检查止损条件
+            if self.params.use_chandelier:
+                stop_price = self.highest[0] - (
+                    self.params.chandelier_multiplier * self.atr[0]
+                )
+                signal["stop_loss"] = {
+                    "type": "吊灯止损",
+                    "price": stop_price,
+                    "distance_pct": (
+                        (self.data.close[0] - stop_price) / self.data.close[0]
+                    )
+                    * 100,
+                }
+
+            if self.params.use_adr:
+                stop_price = self.entry_price - (
+                    self.params.adr_multiplier * self.adr[0]
+                )
+                signal["stop_loss"] = {
+                    "type": "ADR止损",
+                    "price": stop_price,
+                    "distance_pct": (
+                        (self.data.close[0] - stop_price) / self.data.close[0]
+                    )
+                    * 100,
+                }
+
+            # 检查是否有卖出信号
+            should_exit, exit_reason = self._calculate_exit_signals()
+            if should_exit:
+                signal["action"] = "卖出"
+                signal["conditions"].append(exit_reason)
+
+        else:
+            # 检查买入条件
+            if self.signal_calculator.check_ma_signal(
+                short_ma, long_ma, prev_short_ma, prev_long_ma
+            ):
+                signal["action"] = "买入"
+                signal["conditions"].append(
+                    f"MA{self.params.short_period}({short_ma:.2f}) > "
+                    f"MA{self.params.long_period}({long_ma:.2f})"
+                )
+
+        return signal
 
 
 class BacktestRunner:
@@ -606,12 +700,7 @@ class BacktestRunner:
 
     @staticmethod
     def _run_single_combination(params: Dict, base_config: Dict) -> Dict:
-        """运行单个参数组合的回测
-
-        Args:
-            params: 参数组合
-            base_config: 基础配置（包含df, initial_capital等）
-        """
+        """运行单个参数组合的回测"""
         try:
             # 创建回测引擎
             cerebro = bt.Cerebro()
@@ -679,7 +768,7 @@ class BacktestRunner:
                     }
                     for t in strat.trade_records
                 ],
-                "next_signal": BacktestRunner._predict_next_signal(strat),
+                "next_signal": strat._predict_next_signal(),
                 "last_trade_date": strat.data.datetime.datetime(),
             }
 
@@ -911,7 +1000,15 @@ def main():
         help="并行进程数，默认使用CPU核心数",
     )
 
+    # 添加调试开关
+    # parser.add_argument("--debug", action="store_true", help="启用调试日志")
+
     args = parser.parse_args()
+
+    # # 配置日志级别
+    # logger.remove()  # 移除默认的处理器
+    # log_level = "DEBUG" if args.debug else "INFO"
+    # logger.add(sys.stderr, level=log_level)
 
     # 检查是否有范围参数
     has_ranges = any(
