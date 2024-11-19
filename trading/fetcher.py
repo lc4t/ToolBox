@@ -80,67 +80,74 @@ class StockDataManager:
 
     def fetch_data(
         self,
-        symbol: Optional[str] = None,
+        symbol: str,
         start_date: Optional[datetime] = None,
-        end_date: Optional[datetime] = None
+        end_date: Optional[datetime] = None,
+        db_client: Optional[DBClient] = None,
     ) -> bool:
-        """获取股票数据，支持单个股票或所有活跃股票"""
-        end_date = end_date or datetime.now()
-        symbols = [symbol] if symbol else self.db_client.get_active_symbols()
-        
-        if not symbols:
-            logger.warning("No symbols to fetch")
-            return False
+        """获取股票数据"""
+        if db_client is None:
+            db_client = DBClient()
 
-        # 准备任务列表
-        tasks = []
-        for sym in symbols:
-            sym_start_date = start_date
-            if not sym_start_date:
-                latest_date = self.db_client.get_latest_date(sym)
-                sym_start_date = (latest_date + timedelta(days=1)) if latest_date else (end_date - timedelta(days=30))
-            
-            tasks.append((sym, sym_start_date, end_date))
+        try:
+            # 准备任务列表
+            tasks = []
+            for sym in [symbol]:
+                sym_start_date = start_date
+                if not sym_start_date:
+                    latest_date = self.db_client.get_latest_date(sym)
+                    sym_start_date = (latest_date + timedelta(days=1)) if latest_date else (end_date - timedelta(days=30))
+                
+                tasks.append((sym, sym_start_date, end_date))
 
-        # 使用线程池并发获取数据
-        success = True
-        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            futures = {
-                executor.submit(self._fetch_single_stock_data, sym, start, end): sym 
-                for sym, start, end in tasks
-            }
-            
-            with tqdm(total=len(tasks), desc="Fetching data") as pbar:
-                for future in as_completed(futures):
-                    symbol = futures[future]
-                    try:
-                        data = future.result()
-                        if data:
-                            # 输出最新一条数据的信息
-                            latest_record = max(data, key=lambda x: x['date'])
-                            logger.info(
-                                f"Symbol: {symbol} | "
-                                f"Latest Date: {latest_record['date']} | "
-                                f"Open: {latest_record['open_price']:.4f} | "
-                                f"Close: {latest_record['close_price']:.4f} | "
-                                f"High: {latest_record['high']:.4f} | "
-                                f"Low: {latest_record['low']:.4f} | "
-                                f"Volume: {latest_record['volume']:,}"
-                            )
-                            
-                            if not self.db_client.upsert_trading_data(data):
+            # 使用线程池并发获取数据
+            success = True
+            with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+                futures = {
+                    executor.submit(self._fetch_single_stock_data, sym, start, end): sym 
+                    for sym, start, end in tasks
+                }
+                
+                with tqdm(total=len(tasks), desc="Fetching data") as pbar:
+                    for future in as_completed(futures):
+                        symbol = futures[future]
+                        try:
+                            data = future.result()
+                            if data:
+                                # 获取数据中最早的日期
+                                earliest_date = min(data, key=lambda x: x['date'])['date']
+                                
+                                # 更新上市时间（如果未设置）
+                                db_client.update_symbol_listing_date(symbol, earliest_date)
+                                
+                                # 输出最新一条数据的信息
+                                latest_record = max(data, key=lambda x: x['date'])
+                                logger.info(
+                                    f"Symbol: {symbol} | "
+                                    f"Latest Date: {latest_record['date']} | "
+                                    f"Open: {latest_record['open_price']:.4f} | "
+                                    f"Close: {latest_record['close_price']:.4f} | "
+                                    f"High: {latest_record['high']:.4f} | "
+                                    f"Low: {latest_record['low']:.4f} | "
+                                    f"Volume: {latest_record['volume']:,}"
+                                )
+                                
+                                if not self.db_client.upsert_trading_data(data):
+                                    success = False
+                                    logger.error(f"Failed to save data for {symbol}")
+                            else:
                                 success = False
-                                logger.error(f"Failed to save data for {symbol}")
-                        else:
+                                logger.warning(f"No data fetched for {symbol}")
+                        except Exception as e:
                             success = False
-                            logger.warning(f"No data fetched for {symbol}")
-                    except Exception as e:
-                        success = False
-                        logger.error(f"Error processing {symbol}: {e}")
-                    finally:
-                        pbar.update(1)
+                            logger.error(f"Error processing {symbol}: {e}")
+                        finally:
+                            pbar.update(1)
 
-        return success
+            return success
+        except Exception as e:
+            logger.error(f"Error fetching data: {e}")
+            return False
 
 
 def main():
@@ -148,33 +155,66 @@ def main():
     parser = argparse.ArgumentParser(description="股票数据获取工具")
     parser.add_argument("--symbol", help="股票代码，不指定则更新所有股票", default=None)
     parser.add_argument("--start-date", help="开始日期 (YYYY-MM-DD)", default=None)
-    parser.add_argument("--end-date", help="结束日期 (YYYY-MM-DD)", default=None)
+    parser.add_argument("--end-date", help="结束日期 (YYYY-MM-DD)，默认为今天", default=None)
     parser.add_argument("--workers", help="并发数", type=int, default=5)
     parser.add_argument("--retries", help="重试次数", type=int, default=3)
-    parser.add_argument("--yes", "-y", help="跳过所有确认", action="store_true")
     
     args = parser.parse_args()
     
-    start_date = datetime.strptime(args.start_date, "%Y-%m-%d") if args.start_date else None
-    end_date = datetime.strptime(args.end_date, "%Y-%m-%d") if args.end_date else None
+    # 处理日期格式
+    if args.start_date:
+        start_date = datetime.strptime(args.start_date, "%Y-%m-%d").date()
+    else:
+        start_date = None
+        
+    # 结束日期默认使用今天
+    end_date = datetime.now().date()
+    if args.end_date:
+        end_date = datetime.strptime(args.end_date, "%Y-%m-%d").date()
+        if end_date > datetime.now().date():
+            logger.warning("结束日期超过今天，将使用今天作为结束日期")
+            end_date = datetime.now().date()
     
-    if not args.yes:
-        confirm = input("是否开始获取数据？(y/N) ")
-        if confirm.lower() != 'y':
-            logger.info("取消操作")
+    # 创建数据库客户端
+    db_client = DBClient()
+    
+    # 获取要更新的股票列表
+    if args.symbol:
+        symbols = [args.symbol]
+    else:
+        symbols = db_client.get_active_symbols()
+        if not symbols:
+            logger.error("数据库中没有找到活跃的股票")
             return
+        logger.info(f"找到 {len(symbols)} 个活跃股票需要更新")
+    
+
     
     manager = StockDataManager(max_workers=args.workers, max_retries=args.retries)
-    success = manager.fetch_data(
-        symbol=args.symbol,
-        start_date=start_date,
-        end_date=end_date
-    )
     
-    if success:
-        logger.info("Data fetch completed successfully")
+    # 记录总体成功状态
+    overall_success = True
+    
+    # 更新每个股票的数据
+    for symbol in symbols:
+        logger.info(f"\n开始更新 {symbol} 的数据...")
+        success = manager.fetch_data(
+            symbol=symbol,
+            start_date=start_date,
+            end_date=end_date,
+            db_client=db_client
+        )
+        if not success:
+            overall_success = False
+            logger.error(f"{symbol} 数据更新失败")
+    
+    # 关闭数据库连接
+    db_client.close()
+    
+    if overall_success:
+        logger.info("所有数据更新完成")
     else:
-        logger.warning("Data fetch completed with some errors")
+        logger.warning("部分数据更新失败")
         exit(1)
 
 

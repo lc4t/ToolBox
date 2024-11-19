@@ -76,7 +76,7 @@ class SymbolInfo(Base):
     status = Column(
         String(20), nullable=False, default="active", comment="状态：active,delisted"
     )
-    description = Column(String(500), nullable=True, comment="描")
+    description = Column(String(500), nullable=True, comment="描述")
     create_time = Column(
         DATETIME, nullable=False, default=datetime.now, comment="创建时间"
     )
@@ -327,7 +327,36 @@ class DBClient:
             logger.error(f"Error getting latest date for {symbol}: {e}")
             return None
 
+    def get_symbol_first_date(self, symbol: str) -> Optional[datetime]:
+        """获取指定股票最早的交易数据日期"""
+        try:
+            with self.Session() as session:
+                result = (
+                    session.query(func.min(TradingData.date))
+                    .filter(TradingData.symbol == symbol)
+                    .scalar()
+                )
+                return result
+        except SQLAlchemyError as e:
+            logger.error(f"Error getting first date for {symbol}: {e}")
+            return None
+
     def close(self):
         """关闭数据库连接"""
         if hasattr(self, 'engine'):
             self.engine.dispose()
+
+    def update_symbol_listing_date(self, symbol: str, listing_date: datetime) -> bool:
+        """更新股票的上市时间"""
+        try:
+            with self.Session() as session:
+                result = (
+                    session.query(SymbolInfo)
+                    .filter(SymbolInfo.symbol == symbol)
+                    .update({"listing_date": listing_date})
+                )
+                session.commit()
+                return result > 0
+        except SQLAlchemyError as e:
+            logger.error(f"Error updating symbol listing date: {e}")
+            return False
