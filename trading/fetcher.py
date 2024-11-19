@@ -75,8 +75,25 @@ class StockDataManager:
         start_date: datetime,
         end_date: datetime
     ) -> List[Dict[str, Any]]:
-        """获取单个股票的据，带重试机制"""
-        return self.yfinance_fetcher.fetch_data(symbol, start_date, end_date)
+        """获取单个股票的数据，带重试机制"""
+        logger.info(f"正在获取 {symbol} 的数据 ({start_date} 至 {end_date})")
+        data = self.yfinance_fetcher.fetch_data(symbol, start_date, end_date)
+        
+        if data:
+            # 获取实际数据的时间范围
+            actual_dates = [record['date'] for record in data]
+            actual_start = min(actual_dates)
+            actual_end = max(actual_dates)
+            logger.info(
+                f"成功获取 {symbol} 的数据：\n"
+                f"  请求范围：{start_date} 至 {end_date}\n"
+                f"  实际范围：{actual_start} 至 {actual_end}\n"
+                f"  数据条数：{len(data)}"
+            )
+        else:
+            logger.warning(f"未获取到 {symbol} 在 {start_date} 至 {end_date} 期间的数据")
+        
+        return data
 
     def fetch_data(
         self,
@@ -95,8 +112,15 @@ class StockDataManager:
             for sym in [symbol]:
                 sym_start_date = start_date
                 if not sym_start_date:
-                    latest_date = self.db_client.get_latest_date(sym)
-                    sym_start_date = (latest_date + timedelta(days=1)) if latest_date else (end_date - timedelta(days=30))
+                    # 优先使用 listing_date
+                    symbol_info = db_client.get_symbol_info(sym)
+                    if symbol_info and symbol_info.get('listing_date'):
+                        sym_start_date = symbol_info['listing_date']
+                    else:
+                        # 如果没有 listing_date，则使用最新数据日期
+                        latest_date = db_client.get_latest_date(sym)
+                        sym_start_date = (latest_date + timedelta(days=1)) if latest_date else (end_date - timedelta(days=30))
+                        logger.warning(f"未找到 {sym} 的上市日期，使用 {sym_start_date} 作为起始日期")
                 
                 tasks.append((sym, sym_start_date, end_date))
 
@@ -114,12 +138,6 @@ class StockDataManager:
                         try:
                             data = future.result()
                             if data:
-                                # 获取数据中最早的日期
-                                earliest_date = min(data, key=lambda x: x['date'])['date']
-                                
-                                # 更新上市时间（如果未设置）
-                                db_client.update_symbol_listing_date(symbol, earliest_date)
-                                
                                 # 输出最新一条数据的信息
                                 latest_record = max(data, key=lambda x: x['date'])
                                 logger.info(

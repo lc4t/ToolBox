@@ -72,7 +72,6 @@ class SymbolInfo(Base):
     symbol = Column(String(20), primary_key=True)
     name = Column(String(100), nullable=False, comment="股票名称")
     listing_date = Column(Date, nullable=True, comment="上市时间")
-    market = Column(String(20), nullable=False, comment="市场代码，如：SZ, SH, US")
     status = Column(
         String(20), nullable=False, default="active", comment="状态：active,delisted"
     )
@@ -238,7 +237,6 @@ class DBClient:
                     "symbol": info.symbol,
                     "name": info.name,
                     "listing_date": info.listing_date,
-                    "market": info.market,
                     "status": info.status,
                     "description": info.description,
                     "create_time": info.create_time,
@@ -346,17 +344,17 @@ class DBClient:
         if hasattr(self, 'engine'):
             self.engine.dispose()
 
-    def update_symbol_listing_date(self, symbol: str, listing_date: datetime) -> bool:
-        """更新股票的上市时间"""
-        try:
-            with self.Session() as session:
-                result = (
-                    session.query(SymbolInfo)
-                    .filter(SymbolInfo.symbol == symbol)
-                    .update({"listing_date": listing_date})
-                )
-                session.commit()
-                return result > 0
-        except SQLAlchemyError as e:
-            logger.error(f"Error updating symbol listing date: {e}")
-            return False
+    # def update_symbol_listing_date(self, symbol: str, listing_date: datetime) -> bool:
+    #     """更新股票的上市时间"""
+    #     try:
+    #         with self.Session() as session:
+    #             result = (
+    #                 session.query(SymbolInfo)
+    #                 .filter(SymbolInfo.symbol == symbol)
+    #                 .update({"listing_date": listing_date})
+    #             )
+    #             session.commit()
+    #             return result > 0
+    #     except SQLAlchemyError as e:
+    #         logger.error(f"Error updating symbol listing date: {e}")
+    #         return False
