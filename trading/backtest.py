@@ -10,7 +10,6 @@ from itertools import product
 from typing import Dict, List, Optional, Tuple
 
 import backtrader as bt
-import numpy as np
 import pandas as pd
 from analyzers import PerformanceAnalyzer
 from db import DBClient
@@ -398,7 +397,7 @@ class DualMAStrategy(bt.Strategy):
             "action": "观察",  # 默认动作
             "conditions": [],
             "stop_loss": None,
-            "position_info": None,  # 添加持仓信息字段
+            "position_info": None,
         }
 
         # 获取最新的技术指标数据
@@ -413,18 +412,21 @@ class DualMAStrategy(bt.Strategy):
                 (t for t in reversed(self.trade_records) if t.action == "BUY"), None
             )
             if last_buy:
+                current_price = self.data.close[0]
+                unrealized_pnl = (current_price - last_buy.price) * last_buy.size
+                unrealized_pnl_pct = ((current_price / last_buy.price) - 1) * 100
+
                 signal["action"] = "持有"
                 signal["position_info"] = {
                     "entry_date": last_buy.date.strftime("%Y-%m-%d %H:%M:%S"),
                     "entry_price": last_buy.price,
                     "position_size": last_buy.size,
                     "position_value": last_buy.value,  # 买入金额
-                    "current_price": self.data.close[0],
-                    "current_value": self.data.close[0] * last_buy.size,  # 当前市值
-                    "unrealized_pnl": (self.data.close[0] - last_buy.price)
-                    * last_buy.size,
-                    "unrealized_pnl_pct": ((self.data.close[0] / last_buy.price) - 1)
-                    * 100,
+                    "current_price": current_price,
+                    "current_value": current_price * last_buy.size,  # 当前市值
+                    "cost": last_buy.value,  # 买入成本
+                    "unrealized_pnl": unrealized_pnl,
+                    "unrealized_pnl_pct": unrealized_pnl_pct,
                 }
 
             # 检查止损条件
@@ -576,6 +578,7 @@ class BacktestRunner:
             "sharpe": strat.analyzers.sharpe.get_analysis(),
             "drawdown": strat.analyzers.drawdown.get_analysis(),
             "vwr": strat.analyzers.vwr.get_analysis(),
+            "last_date": last_trade_date,  # 添加最后交易日
         }
 
         # 使用性能分析器计算指标
@@ -628,7 +631,7 @@ class BacktestRunner:
             "action": "观察",  # 默认动作
             "conditions": [],
             "stop_loss": None,
-            "position_info": None,  # 添加持仓信息字段
+            "position_info": None,
         }
 
         # 获取最新的技术指标数据
@@ -643,18 +646,21 @@ class BacktestRunner:
                 (t for t in reversed(strat.trade_records) if t.action == "BUY"), None
             )
             if last_buy:
+                current_price = strat.data.close[0]
+                unrealized_pnl = (current_price - last_buy.price) * last_buy.size
+                unrealized_pnl_pct = ((current_price / last_buy.price) - 1) * 100
+
                 signal["action"] = "持有"
                 signal["position_info"] = {
                     "entry_date": last_buy.date.strftime("%Y-%m-%d %H:%M:%S"),
                     "entry_price": last_buy.price,
                     "position_size": last_buy.size,
                     "position_value": last_buy.value,  # 买入金额
-                    "current_price": strat.data.close[0],
-                    "current_value": strat.data.close[0] * last_buy.size,  # 当前市值
-                    "unrealized_pnl": (strat.data.close[0] - last_buy.price)
-                    * last_buy.size,
-                    "unrealized_pnl_pct": ((strat.data.close[0] / last_buy.price) - 1)
-                    * 100,
+                    "current_price": current_price,
+                    "current_value": current_price * last_buy.size,  # 当前市值
+                    "cost": last_buy.value,  # 买入成本
+                    "unrealized_pnl": unrealized_pnl,
+                    "unrealized_pnl_pct": unrealized_pnl_pct,
                 }
 
             # 检查止损条件
@@ -845,19 +851,19 @@ class BacktestRunner:
         param_names = list(param_lists.keys())
         param_values = [param_lists[name] for name in param_names]
         combinations = list(product(*param_values))
-        
+
         # 过滤无效的参数组合
         valid_combinations = []
         for combo in combinations:
             params = dict(zip(param_names, combo))
             # 检查均线参数
-            if 'ma_short' in params and 'ma_long' in params:
-                if params['ma_short'] >= params['ma_long']:
+            if "ma_short" in params and "ma_long" in params:
+                if params["ma_short"] >= params["ma_long"]:
                     continue
             valid_combinations.append(combo)
-        
+
         combinations = valid_combinations
-        
+
         # 准备基础配置
         base_config = {
             "df": df,  # 直接传递DataFrame
@@ -1107,21 +1113,21 @@ def _print_parameter_summary(combinations: List[dict]):
     # 按年化收益率排序（从低到高）
     sorted_combinations = sorted(
         combinations,
-        key=lambda x: x['annual_return'],
-        reverse=False  # 改为False，实现从低到高排序
+        key=lambda x: x["annual_return"],
+        reverse=False,  # 改为False，实现从低到高排序
     )
 
     table_data = []
     for result in sorted_combinations:
-        params_str = _format_params_string(result['params'])
+        params_str = _format_params_string(result["params"])
         table_data.append(
             [
                 params_str,
                 f"{result['annual_return']:.2f}",
                 f"{result['max_drawdown']:.2f}",
-                result['total_trades'],
-                result['first_trade'],
-                result['last_trade'],
+                result["total_trades"],
+                result["first_trade"],
+                result["last_trade"],
             ]
         )
 
@@ -1131,19 +1137,21 @@ def _print_parameter_summary(combinations: List[dict]):
 def _format_params_string(params: dict) -> str:
     """格式化参数字符串，只显示启用的参数"""
     parts = []
-    
+
     # 双均线参数
-    if params.get('use_ma'):
+    if params.get("use_ma"):
         parts.append(f"MA={params['short_period']}/{params['long_period']}")
-    
+
     # 吊灯止损参数
-    if params.get('use_chandelier'):
-        parts.append(f"ATR={params['chandelier_multiplier']}x{params['chandelier_period']}")
-    
+    if params.get("use_chandelier"):
+        parts.append(
+            f"ATR={params['chandelier_multiplier']}x{params['chandelier_period']}"
+        )
+
     # ADR止损参数
-    if params.get('use_adr'):
+    if params.get("use_adr"):
         parts.append(f"ADR={params['adr_multiplier']}x{params['adr_period']}")
-    
+
     return ", ".join(parts)
 
 
@@ -1360,7 +1368,7 @@ def main():
             end_date=datetime.strptime(args.end_date, "%Y-%m-%d"),
             initial_capital=args.initial_capital,
             commission_rate=args.commission_rate,
-            **strategy_params
+            **strategy_params,
         )
 
         # 将策略参数添加到结果中
