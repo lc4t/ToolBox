@@ -85,7 +85,11 @@ class SignalCalculator:
         atr: float,
         multiplier: float,
     ) -> bool:
-        """计算吊灯止损信号"""
+        """计算吊灯止损信号
+
+        吊灯止损应该在最高价下方，而不是上方
+        对于多头：止损价 = 最高价 - (ATR * 乘数)
+        """
         stop_price = highest_high - (multiplier * atr)
         return close < stop_price
 
@@ -133,9 +137,9 @@ class DualMAStrategy(bt.Strategy):
             self.atr = bt.indicators.ATR(
                 self.data, period=self.params.chandelier_period
             )
-            self.highest = bt.indicators.Highest(
-                self.data.high, period=self.params.chandelier_period
-            )
+            # 记录买入后的最高价
+            self.buy_price = None
+            self.highest_since_buy = None
 
         # ADR止损指标
         if self.params.use_adr:
@@ -299,27 +303,49 @@ class DualMAStrategy(bt.Strategy):
                 self.short_ma[-1],
                 self.long_ma[-1],
             ):
-                return True, "MA Cross"
+                return True, (
+                    f"MA死叉 [MA{self.params.short_period}={self.short_ma[0]:.3f} < "
+                    f"MA{self.params.long_period}={self.long_ma[0]:.3f}]"
+                )
 
-        # 检查吊灯止
-        if self.params.use_chandelier:
+        # 检查吊灯止损
+        if self.params.use_chandelier and self.position:
+            # 更新买入后的最高价
+            if self.highest_since_buy is None:
+                self.highest_since_buy = self.data.high[0]
+            else:
+                self.highest_since_buy = max(self.highest_since_buy, self.data.high[0])
+
+            stop_price = self.highest_since_buy - (
+                self.params.chandelier_multiplier * self.atr[0]
+            )
+
             if self.signal_calculator.check_chandelier_exit(
                 self.data.close[0],
-                self.highest[0],
+                self.highest_since_buy,  # 使用买入后的最高价
                 self.atr[0],
                 self.params.chandelier_multiplier,
             ):
-                return True, "Chandelier Exit"
+                return True, (
+                    f"吊灯止损触发 [当前价={self.data.close[0]:.3f} < "
+                    f"止损价={stop_price:.3f}, ATR={self.atr[0]:.3f}, "
+                    f"买入后最高价={self.highest_since_buy:.3f}]"
+                )
 
         # 检查ADR止损
         if self.params.use_adr and self.entry_price is not None:
+            stop_price = self.entry_price - (self.params.adr_multiplier * self.adr[0])
             if self.signal_calculator.check_adr_exit(
                 self.data.close[0],
                 self.entry_price,
                 self.adr[0],
                 self.params.adr_multiplier,
             ):
-                return True, "ADR Stop"
+                return True, (
+                    f"ADR止损触发 [当前价={self.data.close[0]:.3f} < "
+                    f"止损价={stop_price:.3f}, ADR={self.adr[0]:.3f}, "
+                    f"入场价={self.entry_price:.3f}]"
+                )
 
         return False, ""
 
@@ -334,6 +360,9 @@ class DualMAStrategy(bt.Strategy):
 
         if not self.position:
             if self._calculate_entry_signal():
+                # 买入时重置最高价记录
+                self.highest_since_buy = None
+
                 # 使用指定的资金使用比例
                 cash = self.broker.get_cash() * self.params.position_size
                 size = int(cash / self.data.close[0])
@@ -389,9 +418,9 @@ class DualMAStrategy(bt.Strategy):
             )
         return signal_type
 
-    def _predict_next_signal(self) -> Dict:
+    def _predict_next_signal(self, strat) -> Dict:
         """预测下一个交易信号"""
-        current_position = bool(self.position)
+        current_position = bool(strat.position)
 
         signal = {
             "action": "观察",  # 默认动作
@@ -401,18 +430,18 @@ class DualMAStrategy(bt.Strategy):
         }
 
         # 获取最新的技术指标数据
-        short_ma = self.short_ma[0]
-        long_ma = self.long_ma[0]
-        prev_short_ma = self.short_ma[-1]
-        prev_long_ma = self.long_ma[-1]
+        short_ma = strat.short_ma[0]
+        long_ma = strat.long_ma[0]
+        prev_short_ma = strat.short_ma[-1]
+        prev_long_ma = strat.long_ma[-1]
 
         if current_position:
             # 如果有持仓，获取最近的买入记录
             last_buy = next(
-                (t for t in reversed(self.trade_records) if t.action == "BUY"), None
+                (t for t in reversed(strat.trade_records) if t.action == "BUY"), None
             )
             if last_buy:
-                current_price = self.data.close[0]
+                current_price = strat.data.close[0]
                 unrealized_pnl = (current_price - last_buy.price) * last_buy.size
                 unrealized_pnl_pct = ((current_price / last_buy.price) - 1) * 100
 
@@ -430,47 +459,51 @@ class DualMAStrategy(bt.Strategy):
                 }
 
             # 检查止损条件
-            if self.params.use_chandelier:
-                stop_price = self.highest[0] - (
-                    self.params.chandelier_multiplier * self.atr[0]
-                )
-                signal["stop_loss"] = {
-                    "type": "吊灯止损",
-                    "price": stop_price,
-                    "distance_pct": (
-                        (self.data.close[0] - stop_price) / self.data.close[0]
+            if strat.params.use_chandelier:
+                # 使用买入后的最高价计算止损价
+                if strat.highest_since_buy is not None:
+                    stop_price = strat.highest_since_buy - (
+                        strat.params.chandelier_multiplier * strat.atr[0]
                     )
-                    * 100,
-                }
+                    signal["stop_loss"] = {
+                        "type": "吊灯止损",
+                        "price": stop_price,
+                        "distance_pct": ((current_price - stop_price) / current_price)
+                        * 100,
+                        "indicators": {  # 添加指标信息便于调试
+                            "highest_since_buy": strat.highest_since_buy,
+                            "atr": strat.atr[0],
+                            "multiplier": strat.params.chandelier_multiplier,
+                            "current_price": current_price,
+                        },
+                    }
 
-            if self.params.use_adr:
-                stop_price = self.entry_price - (
-                    self.params.adr_multiplier * self.adr[0]
+            if strat.params.use_adr:
+                stop_price = strat.entry_price - (
+                    strat.params.adr_multiplier * strat.adr[0]
                 )
                 signal["stop_loss"] = {
                     "type": "ADR止损",
                     "price": stop_price,
-                    "distance_pct": (
-                        (self.data.close[0] - stop_price) / self.data.close[0]
-                    )
+                    "distance_pct": ((current_price - stop_price) / current_price)
                     * 100,
                 }
 
             # 检查是否有卖出信号
-            should_exit, exit_reason = self._calculate_exit_signals()
+            should_exit, exit_reason = strat._calculate_exit_signals()
             if should_exit:
                 signal["action"] = "卖出"
                 signal["conditions"].append(exit_reason)
 
         else:
             # 检查买入条件
-            if self.signal_calculator.check_ma_signal(
+            if strat.signal_calculator.check_ma_signal(
                 short_ma, long_ma, prev_short_ma, prev_long_ma
             ):
                 signal["action"] = "买入"
                 signal["conditions"].append(
-                    f"MA{self.params.short_period}({short_ma:.2f}) > "
-                    f"MA{self.params.long_period}({long_ma:.2f})"
+                    f"MA{strat.params.short_period}({short_ma:.2f}) > "
+                    f"MA{strat.params.long_period}({long_ma:.2f})"
                 )
 
         return signal
@@ -665,17 +698,23 @@ class BacktestRunner:
 
             # 检查止损条件
             if strat.params.use_chandelier:
-                stop_price = strat.highest[0] - (
-                    strat.params.chandelier_multiplier * strat.atr[0]
-                )
-                signal["stop_loss"] = {
-                    "type": "吊灯止损",
-                    "price": stop_price,
-                    "distance_pct": (
-                        (strat.data.close[0] - stop_price) / strat.data.close[0]
+                # 使用买入后的最高价计算止损价
+                if strat.highest_since_buy is not None:
+                    stop_price = strat.highest_since_buy - (
+                        strat.params.chandelier_multiplier * strat.atr[0]
                     )
-                    * 100,
-                }
+                    signal["stop_loss"] = {
+                        "type": "吊灯止损",
+                        "price": stop_price,
+                        "distance_pct": ((current_price - stop_price) / current_price)
+                        * 100,
+                        "indicators": {  # 添加指标信息便于调试
+                            "highest_since_buy": strat.highest_since_buy,
+                            "atr": strat.atr[0],
+                            "multiplier": strat.params.chandelier_multiplier,
+                            "current_price": current_price,
+                        },
+                    }
 
             if strat.params.use_adr:
                 stop_price = strat.entry_price - (
@@ -684,9 +723,7 @@ class BacktestRunner:
                 signal["stop_loss"] = {
                     "type": "ADR止损",
                     "price": stop_price,
-                    "distance_pct": (
-                        (strat.data.close[0] - stop_price) / strat.data.close[0]
-                    )
+                    "distance_pct": ((current_price - stop_price) / current_price)
                     * 100,
                 }
 
@@ -1041,6 +1078,13 @@ def _print_next_signal(next_signal: dict):
 
     logger.info(f"建议动作: {next_signal['action']:>12}")
 
+    # 添加信号条件的详细说明
+    if next_signal["conditions"]:
+        logger.info(SUBSECTION_SEPARATOR)
+        logger.info("触发条件:")
+        for condition in next_signal["conditions"]:
+            logger.info(f"- {condition}")
+
     if next_signal["position_info"]:
         pos_info = next_signal["position_info"]
         logger.info(SUBSECTION_SEPARATOR)
@@ -1054,11 +1098,25 @@ def _print_next_signal(next_signal: dict):
             ("当前市值", f"{pos_info['current_value']:.2f}"),
             (
                 "浮动盈亏",
-                f"{pos_info['unrealized_pnl']:.2f} ({pos_info['unrealized_pnl_pct']:.2f}%)",
+                f"{pos_info['unrealized_pnl']:.2f} "
+                f"({pos_info['unrealized_pnl_pct']:.2f}%)",
             ),
         ]
         for label, value in info_layout:
             logger.info(f"{label:>12}: {value}")
+
+    # 添加止损信息的详细说明
+    if next_signal["stop_loss"]:
+        logger.info(SUBSECTION_SEPARATOR)
+        stop_info = next_signal["stop_loss"]
+        logger.info("止损信息:")
+        logger.info(
+            f"类型: {stop_info['type']}\n"
+            f"止损价: {stop_info['price']:.3f}\n"
+            f"当前价格: {pos_info['current_price']:.3f}\n"  # 添加当前价格作为参考
+            f"止损距离: {abs(stop_info['distance_pct']):.2f}%\n"
+            f"止损方向: {'向下' if stop_info['price'] < pos_info['current_price'] else '向上'}"
+        )
 
 
 def _print_trades(trades: List[dict], title: str = "交易记录"):
