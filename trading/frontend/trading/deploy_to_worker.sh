@@ -4,7 +4,14 @@
 set -e
 
 # 切换到前端目录
-cd "$(dirname "$0")"
+SCRIPT_DIR="$(dirname "$0")"
+cd "$SCRIPT_DIR"
+
+# 确保在正确的目录
+if [ ! -f "package.json" ]; then
+    echo "Error: package.json not found. Make sure you're in the correct directory."
+    exit 1
+fi
 
 # 清理函数
 clean_build() {
@@ -28,7 +35,7 @@ elif [ "$1" == "deploy" ]; then
     yarn build
     
     echo "Deploying to Cloudflare Pages..."
-    yarn wrangler pages deploy out
+    yarn wrangler pages deploy out --no-cache
     
     echo "Deployment completed successfully!"
 else
