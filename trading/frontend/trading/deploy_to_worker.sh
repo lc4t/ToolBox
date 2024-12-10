@@ -35,7 +35,7 @@ elif [ "$1" == "deploy" ]; then
     yarn build
     
     echo "Deploying to Cloudflare Pages..."
-    yarn wrangler pages deploy out --no-cache
+    yarn wrangler pages deploy out --project-name trading
     
     echo "Deployment completed successfully!"
 else
