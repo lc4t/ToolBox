@@ -21,7 +21,7 @@ from sqlalchemy.engine.url import URL
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.sql import func
+from sqlalchemy.sql import func, text
 
 # 加载环境变量
 load_dotenv()
@@ -228,7 +228,11 @@ class DBClient:
         """获取股票基本信息"""
         try:
             with self.Session() as session:
-                info = session.query(SymbolInfo).filter(SymbolInfo.symbol == symbol).first()
+                info = (
+                    session.query(SymbolInfo)
+                    .filter(SymbolInfo.symbol == symbol)
+                    .first()
+                )
 
                 if not info:
                     return None
@@ -286,10 +290,10 @@ class DBClient:
                     "high": stmt.inserted.high,
                     "low": stmt.inserted.low,
                     "volume": stmt.inserted.volume,
-                    "update_time": datetime.now()
+                    "update_time": datetime.now(),
                 }
                 stmt = stmt.on_duplicate_key_update(**update_dict)
-                
+
                 session.execute(stmt)
                 session.commit()
                 return True
@@ -303,7 +307,7 @@ class DBClient:
             with self.Session() as session:
                 symbols = (
                     session.query(SymbolInfo.symbol)
-                    .filter(SymbolInfo.status == 'active')
+                    .filter(SymbolInfo.status == "active")
                     .all()
                 )
                 return [symbol[0] for symbol in symbols]
@@ -341,7 +345,7 @@ class DBClient:
 
     def close(self):
         """关闭数据库连接"""
-        if hasattr(self, 'engine'):
+        if hasattr(self, "engine"):
             self.engine.dispose()
 
     # def update_symbol_listing_date(self, symbol: str, listing_date: datetime) -> bool:
@@ -358,3 +362,34 @@ class DBClient:
     #     except SQLAlchemyError as e:
     #         logger.error(f"Error updating symbol listing date: {e}")
     #         return False
+
+    def query_latest_by_symbol(self, symbol: str) -> Optional[Dict]:
+        """获取指定股票的最新交易日数据"""
+        try:
+            with self.Session() as session:
+                # 获取最新的一条记录
+                result = session.execute(
+                    text(
+                        """
+                        SELECT date, open_price, close_price, high, low
+                        FROM trading_data
+                        WHERE symbol = :symbol
+                        ORDER BY date DESC
+                        LIMIT 1
+                    """
+                    ),
+                    {"symbol": symbol},
+                ).fetchone()
+
+                if result:
+                    return {
+                        "date": result[0],
+                        "open_price": float(result[1]),
+                        "close_price": float(result[2]),
+                        "high": float(result[3]),
+                        "low": float(result[4]),
+                    }
+                return None
+        except Exception as e:
+            logger.error(f"Error querying latest data for {symbol}: {e}")
+            return None

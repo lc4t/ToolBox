@@ -5,10 +5,16 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Badge } from "@/components/ui/badge"
 
 interface TradeSignal {
-  action: '买入' | '卖出' | '观察' | '持有';
+  action: "观察" | "卖出" | "买入" | "持有";
   asset: string;
-  price: number;
   timestamp: string;
+  prices?: {
+    open: number;
+    close: number;
+    high: number;
+    low: number;
+  };
+  price?: number;
 }
 
 interface PositionInfo {
@@ -28,7 +34,7 @@ interface Metric {
 
 interface Trade {
   date: string;
-  action: 'BUY' | 'SELL';
+  action: string;
   price: number;
   quantity: number;
   value: number;
@@ -77,7 +83,9 @@ export default function QuantTradeReport({
     <div className="container mx-auto p-4 space-y-6">
       <Card>
         <CardHeader className="bg-primary text-primary-foreground">
-          <CardTitle className="text-2xl">【{latestSignal.action === '观望' ? '观察' : '持有'}】{name}({symbol}) - {reportDate}</CardTitle>
+          <CardTitle className="text-2xl">
+            【{latestSignal.action}】{name}({symbol}) - {reportDate}
+          </CardTitle>
           <p>{formatDate(dateRange.start)} 至 {formatDate(dateRange.end)}</p>
         </CardHeader>
         <CardContent>
@@ -106,27 +114,62 @@ function LatestSignalSection({ signal }: { signal: TradeSignal }) {
         <CardTitle>最新信号</CardTitle>
       </CardHeader>
       <CardContent>
-        <div className="flex justify-between items-center">
-          <div>
-            <p className="text-lg font-semibold">{signal.asset}</p>
-            <p className="text-sm text-muted-foreground">{formatDate(signal.timestamp)}</p>
-          </div>
-          <div>
+        <div className="space-y-4">
+          <div className="flex justify-between items-center">
+            <div>
+              <p className="text-lg font-semibold">{signal.asset}</p>
+              <p className="text-sm text-muted-foreground">
+                {formatDate(signal.timestamp)} 交易日
+              </p>
+            </div>
             <Badge
               variant={
                 signal.action === '买入'
                   ? 'default'
                   : signal.action === '卖出'
-                    ? 'destructive'
-                    : signal.action === '平仓'
-                      ? 'outline'
-                      : 'secondary'
+                  ? 'destructive'
+                  : 'secondary'
               }
             >
               {signal.action}
             </Badge>
-            <p className="text-lg font-bold mt-2">¥{signal.price.toFixed(3)}</p>
           </div>
+          
+          {signal.prices ? (
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <p className="text-sm text-muted-foreground">开盘</p>
+                <p className="text-lg font-semibold">
+                  {signal.prices.open > 0 ? `¥${signal.prices.open.toFixed(3)}` : '暂无'}
+                </p>
+              </div>
+              <div>
+                <p className="text-sm text-muted-foreground">收盘</p>
+                <p className="text-lg font-semibold">
+                  {signal.prices.close > 0 ? `¥${signal.prices.close.toFixed(3)}` : '暂无'}
+                </p>
+              </div>
+              <div>
+                <p className="text-sm text-muted-foreground">最高</p>
+                <p className="text-lg font-semibold text-green-600">
+                  {signal.prices.high > 0 ? `¥${signal.prices.high.toFixed(3)}` : '暂无'}
+                </p>
+              </div>
+              <div>
+                <p className="text-sm text-muted-foreground">最低</p>
+                <p className="text-lg font-semibold text-red-600">
+                  {signal.prices.low > 0 ? `¥${signal.prices.low.toFixed(3)}` : '暂无'}
+                </p>
+              </div>
+            </div>
+          ) : (
+            <div>
+              <p className="text-sm text-muted-foreground">最新价格</p>
+              <p className="text-lg font-semibold">
+                {signal.price ? `¥${signal.price.toFixed(3)}` : '暂无价格'}
+              </p>
+            </div>
+          )}
         </div>
       </CardContent>
     </Card>
@@ -134,18 +177,7 @@ function LatestSignalSection({ signal }: { signal: TradeSignal }) {
 }
 
 function PositionInfoSection({ info }: { info: PositionInfo | null }) {
-  if (!info) {
-    return (
-      <Card>
-        <CardHeader>
-          <CardTitle>当前持仓</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <p className="text-muted-foreground">暂无持仓</p>
-        </CardContent>
-      </Card>
-    );
-  }
+  if (!info) return null;
 
   return (
     <Card>
@@ -153,7 +185,7 @@ function PositionInfoSection({ info }: { info: PositionInfo | null }) {
         <CardTitle>当前持仓</CardTitle>
       </CardHeader>
       <CardContent>
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
           <div>
             <p className="text-sm text-muted-foreground">买入日期:</p>
             <p className="text-lg font-semibold">{formatDate(info.entryDate)}</p>
@@ -189,6 +221,19 @@ function PositionInfoSection({ info }: { info: PositionInfo | null }) {
 }
 
 function AnnualReturnsSection({ returns }: { returns: { year: number; value: number }[] }) {
+  if (!returns || returns.length === 0) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>年度收益率</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="text-center text-muted-foreground">暂无数据</p>
+        </CardContent>
+      </Card>
+    );
+  }
+
   return (
     <Card>
       <CardHeader>
@@ -249,6 +294,18 @@ function MetricsSection({ title, metrics }: { title: string; metrics: Metric[] }
 }
 
 function RecentTradesSection({ trades }: { trades: Trade[] }) {
+  const getActionDisplay = (action: string) => {
+    return action === 'BUY' ? '买入' : action === 'SELL' ? '卖出' : action;
+  };
+
+  const getVariant = (action: string) => {
+    return action === 'BUY' ? 'default' : action === 'SELL' ? 'destructive' : 'secondary';
+  };
+
+  const sortedTrades = [...trades].sort((a, b) => {
+    return new Date(b.date).getTime() - new Date(a.date).getTime();
+  });
+
   return (
     <Card>
       <CardHeader>
@@ -269,12 +326,12 @@ function RecentTradesSection({ trades }: { trades: Trade[] }) {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {trades.map((trade, index) => (
+            {sortedTrades.map((trade, index) => (
               <TableRow key={index}>
                 <TableCell>{formatDate(trade.date)}</TableCell>
                 <TableCell>
-                  <Badge variant={trade.action === 'BUY' ? 'default' : 'destructive'}>
-                    {trade.action === 'BUY' ? '买入' : '卖出'}
+                  <Badge variant={getVariant(trade.action)}>
+                    {getActionDisplay(trade.action)}
                   </Badge>
                 </TableCell>
                 <TableCell>¥{trade.price.toFixed(3)}</TableCell>

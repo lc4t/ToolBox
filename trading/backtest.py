@@ -1,3 +1,4 @@
+import json
 import multiprocessing
 import os
 import re
@@ -5,17 +6,18 @@ import sys
 from argparse import ArgumentParser
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from itertools import product
 from typing import Dict, List, Optional, Tuple
 
 import backtrader as bt
 import pandas as pd
-from analyzers import PerformanceAnalyzer
-from db import DBClient
 from loguru import logger
-from notify import NotifyManager, create_backtest_result
 from tabulate import tabulate
+
+from analyzers import PerformanceAnalyzer
+from db import DBClient, SymbolInfo
+from notify import NotifyManager, create_backtest_result
 
 logger.remove()  # 移除默认的处理器
 log_level = "INFO"
@@ -1170,6 +1172,305 @@ def _print_best_results(results: dict):
     logger.info(f"最大回撤: {min_dd['max_drawdown']:.2f}%")
 
 
+def _format_for_json(
+    metrics: dict,
+    trades: List[dict],
+    next_signal: dict,
+    params: dict,
+    symbol: str,
+    name: str = None,
+) -> dict:
+    """将回测结果格式化为JSON格式"""
+
+    def format_value(v):
+        """处理值，确保JSON可序列化"""
+        if isinstance(v, (datetime, date)):
+            return v.strftime("%Y-%m-%d")
+        if isinstance(v, float):
+            return round(v, 3)
+        return v
+
+    # 获取最新交易日数据
+    try:
+        db_client = DBClient()
+        latest_data = db_client.query_latest_by_symbol(symbol)
+
+        if latest_data:
+            latest_prices = {
+                "open": format_value(latest_data["open_price"]),
+                "close": format_value(latest_data["close_price"]),
+                "high": format_value(latest_data["high"]),
+                "low": format_value(latest_data["low"]),
+            }
+            latest_date = latest_data["date"]
+        else:
+            # 如果没有最新数据，使用最后一笔交易的数据
+            latest_trade = trades[-1] if trades else {}
+            latest_prices = {
+                "open": format_value(latest_trade.get("price", 0.0)),
+                "close": format_value(latest_trade.get("price", 0.0)),
+                "high": format_value(latest_trade.get("price", 0.0)),
+                "low": format_value(latest_trade.get("price", 0.0)),
+            }
+            latest_date = latest_trade.get("date", datetime.now())
+    except Exception as e:
+        logger.error(f"Error getting latest prices for {symbol}: {e}")
+        latest_prices = {"open": 0.0, "close": 0.0, "high": 0.0, "low": 0.0}
+        latest_date = datetime.now()
+
+    # 格式化日期
+    today = date.today().strftime("%Y-%m-%d")
+
+    # 格式化最新信号
+    latest_signal = {
+        "action": next_signal["action"],
+        "asset": name or symbol,
+        "timestamp": format_value(latest_date),
+        "prices": latest_prices,
+    }
+
+    # 获取当前持仓信息
+    position_info = None
+    if next_signal["action"] in ["卖出", "持有"]:
+        position_info = {
+            "entryDate": format_value(next_signal["position_info"]["entry_date"]),
+            "entryPrice": format_value(
+                next_signal["position_info"].get("entry_price", 0.0)
+            ),
+            "quantity": format_value(
+                next_signal["position_info"].get("position_size", 0)
+            ),
+            "currentValue": format_value(
+                next_signal["position_info"].get("position_value", 0.0)
+            ),
+            "profitLoss": format_value(
+                next_signal["position_info"].get("unrealized_pnl", 0.0)
+            ),
+            "profitLossPercentage": format_value(
+                next_signal["position_info"].get("unrealized_pnl_pct", 0.0)
+            ),
+        }
+
+    # 计算年度收益率
+    annual_returns = []
+    try:
+        # 从交易记录中计算每年的收益率
+        trades_df = pd.DataFrame(trades)
+        if not trades_df.empty:
+            trades_df["date"] = pd.to_datetime(trades_df["date"])
+            trades_df["year"] = trades_df["date"].dt.year
+
+            # 按年分组计算收益率
+            yearly_returns = {}
+            for year in trades_df["year"].unique():
+                year_trades = trades_df[trades_df["year"] == year]
+                if not year_trades.empty:
+                    start_value = year_trades.iloc[0]["total_value"]
+                    end_value = year_trades.iloc[-1]["total_value"]
+                    yearly_return = ((end_value / start_value) - 1) * 100
+                    yearly_returns[year] = yearly_return
+
+            # 按年份倒序排列
+            for year in sorted(yearly_returns.keys(), reverse=True):
+                annual_returns.append(
+                    {"year": int(year), "value": format_value(yearly_returns[year])}
+                )
+    except Exception as e:
+        logger.error(f"Error calculating annual returns: {e}")
+
+    # 性能指标
+    performance_metrics = [
+        {
+            "name": "夏普比率",
+            "value": format_value(metrics.get("sharpe_ratio", 0)),
+            "description": "衡量投资组合的超额回报与波动性的比率。大于1表示较好，小于0表示不佳。",
+        },
+        {
+            "name": "最大回撤",
+            "value": format_value(metrics.get("max_drawdown", 0)),
+            "description": "历史最大的亏损幅度，反映策略的风险承受能力。越小越好。",
+        },
+        {
+            "name": "总交易次数",
+            "value": format_value(metrics.get("total_trades", 0)),
+            "description": "策略执行期间的总交易次数。反映策略的交易频率。",
+        },
+        {
+            "name": "胜率",
+            "value": format_value(metrics.get("win_rate", 0)),
+            "description": "盈利交易占总交易的比例。反映策略的准确性。",
+        },
+        {
+            "name": "平均盈利",
+            "value": format_value(metrics.get("avg_won", 0)),
+            "description": "每笔盈利交易的平均收益",
+        },
+        {
+            "name": "平均亏损",
+            "value": format_value(metrics.get("avg_lost", 0)),
+            "description": "每笔亏损交易的平均损失",
+        },
+        {
+            "name": "盈亏比",
+            "value": format_value(metrics.get("profit_factor", 0)),
+            "description": "平均盈利与平均亏损的比值",
+        },
+        {
+            "name": "最大连续盈利次数",
+            "value": format_value(metrics.get("max_consecutive_wins", 0)),
+            "description": "最多连续盈利的交易次数",
+        },
+        {
+            "name": "最大连续亏损次数",
+            "value": format_value(metrics.get("max_consecutive_losses", 0)),
+            "description": "最多连续亏损的交易次数",
+        },
+    ]
+
+    # 风险指标
+    risk_metrics = [
+        {
+            "name": "Calmar比率",
+            "value": format_value(metrics.get("calmar_ratio", 0)),
+            "description": "年化收益率与最大回撤的比值，反映收益与风险的平衡。大于1表示较好，大于3表示优秀。",
+        },
+        {
+            "name": "当前回撤",
+            "value": format_value(metrics.get("current_drawdown", 0)),
+            "description": "当前亏损相对历史最高点的百分比。",
+        },
+        {
+            "name": "VWR指标",
+            "value": format_value(metrics.get("vwr", 0)),
+            "description": "波动率加权收益率，综合考虑收益和波动性。通常大于5表示较好。",
+        },
+        {
+            "name": "SQN指标",
+            "value": format_value(metrics.get("sqn", 0)),
+            "description": "系统质量指数，衡量交易系统的稳定性。大于2表示较好，大于3表示优秀。",
+        },
+        {
+            "name": "波动率",
+            "value": format_value(metrics.get("volatility", 0)),
+            "description": "收益率的标准差",
+        },
+        {
+            "name": "Beta系数",
+            "value": format_value(metrics.get("beta", 0)),
+            "description": "相对于大盘的波动程度",
+        },
+    ]
+
+    # 市场指标
+    logger.info(f"{metrics=}")
+    logger.info(f"{params=}")
+    market_indicators = [
+        {
+            "name": "年化收益率",
+            "value": format_value(metrics.get("annual_return", 0)),
+            "description": "将总收益率换算成年化收益率，便于与其他投资品比较。",
+        },
+        {
+            "name": "累计收益",
+            "value": format_value(metrics.get("total_pnl", 0)),
+            "description": "从策略开始到现在的总收益。",
+        },
+        {
+            "name": "累计收益率",
+            "value": format_value(
+                ((metrics.get("total_pnl", 0) / params.get("initial_capital", 1)) * 100)
+                if params.get("initial_capital", 0) > 0
+                else 0
+            ),
+            "description": "从策略开始到现在的总收益率",
+        },
+        {
+            "name": "年化夏普比率",
+            "value": format_value(
+                metrics.get("sharpe_ratio", 0)
+                * (252 / metrics.get("running_days", 252)) ** 0.5
+                if metrics.get("running_days", 0) > 0
+                else 0
+            ),
+            "description": "年化超额收益与年化波动率之比",
+        },
+        {
+            "name": "最长回撤期",
+            "value": format_value(metrics.get("max_drawdown", 0)),
+            "description": "从最大回撤开始到恢复所需的最长时间（天）",
+        },
+        {
+            "name": "平均持仓时间",
+            "value": f"{format_value(metrics.get('avg_holding_period', 0))}天",
+            "description": "持仓天数占总天数的比例，反映策略的持仓效率。",
+        },
+    ]
+
+    # 格式化最近交易记录
+    recent_trades = []
+    try:
+        for trade in trades[:-1]:
+            recent_trades.append(
+                {
+                    "date": format_value(trade.get("date")),
+                    "action": trade.get("action"),
+                    "price": format_value(trade.get("price")),
+                    "quantity": format_value(trade.get("size")),
+                    "value": format_value(trade.get("value")),
+                    "profitLoss": format_value(trade.get("pnl")),
+                    "totalValue": format_value(trade.get("total_value")),
+                    "reason": trade.get("reason") or trade.get("signal_reason"),
+                }
+            )
+    except Exception as e:
+        logger.error(f"Error formatting recent trades: {e}")
+
+    # 格式化策略参数
+    strategy_parameters = []
+    try:
+        for key, value in params.items():
+            strategy_parameters.append({"name": str(key), "value": format_value(value)})
+    except Exception as e:
+        logger.error(f"Error formatting strategy parameters: {e}")
+
+    # 构建最终JSON结构
+    result = {
+        "symbol": str(symbol),
+        "name": str(name or symbol),
+        "reportDate": today,
+        "dateRange": {
+            "start": format_value(params.get("start_date")),
+            "end": format_value(params.get("end_date")),
+        },
+        "latestSignal": latest_signal,
+        "positionInfo": position_info,
+        "annualReturns": annual_returns,
+        "performanceMetrics": performance_metrics,
+        "riskMetrics": risk_metrics,
+        "marketIndicators": market_indicators,
+        "recentTrades": recent_trades,
+        # "strategyParameters": strategy_parameters,
+        "strategyParameters": None,
+        "showStrategyParameters": params.get("showStrategyParameters", False),
+    }
+
+    return result
+
+
+def _get_stock_name(db_client: DBClient, symbol: str) -> str:
+    """从数据库获取股票名称"""
+    try:
+        with db_client.Session() as session:
+            symbol_info = (
+                session.query(SymbolInfo).filter(SymbolInfo.symbol == symbol).first()
+            )
+            if symbol_info:
+                return symbol_info.name
+    except Exception as e:
+        logger.error(f"Error getting stock name: {e}")
+    return symbol  # 如果获取失败，返回股票代码作为名称
+
+
 def main():
     parser = ArgumentParser(description="股票回测工具")
     parser.add_argument("symbol", help="股票代码")
@@ -1254,6 +1555,9 @@ def main():
 
     # 添加调试开关
     # parser.add_argument("--debug", action="store_true", help="启用调试日志")
+
+    # 添加输出JSON参数
+    parser.add_argument("--output-json", type=str, help="输出结果到指定的JSON文件")
 
     args = parser.parse_args()
 
@@ -1431,6 +1735,48 @@ def main():
                     logger.info("Report sent successfully")
                 else:
                     logger.error("Failed to send report")
+
+    # 如果需要输出JSON
+    if args.output_json:
+        if has_ranges:
+            best_result = results["best_annual_return"]["full_result"]
+        else:
+            best_result = results
+
+        # 获取股票名称
+        db_client = DBClient()
+        stock_name = _get_stock_name(db_client, args.symbol)
+
+        # 构建参数字典
+        params_dict = {
+            "symbol": args.symbol,
+            "start_date": args.start_date,
+            "end_date": args.end_date,
+            "initial_capital": args.initial_capital,
+            "use_ma": args.use_ma,
+            "ma_short": args.ma_short,
+            "ma_long": args.ma_long,
+            "use_chandelier": args.use_chandelier,
+            "chandelier_period": args.chandelier_period,
+            "chandelier_multiplier": args.chandelier_multiplier,
+            "use_adr": args.use_adr,
+            "adr_period": args.adr_period,
+            "adr_multiplier": args.adr_multiplier,
+        }
+
+        json_data = _format_for_json(
+            best_result["metrics"],
+            best_result["all_trades"],
+            best_result["next_signal"],
+            params_dict,
+            args.symbol,
+            stock_name,  # 添加股票名称参数
+        )
+
+        # 输出到JSON文件
+        with open(args.output_json, "w", encoding="utf-8") as f:
+            json.dump(json_data, f, ensure_ascii=False, indent=2)
+            logger.info(f"结果已输出到JSON文件: {args.output_json}")
 
 
 if __name__ == "__main__":

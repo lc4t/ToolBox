@@ -93,7 +93,7 @@ class PerformanceAnalyzer:
                 buy_date = None
 
         metrics["avg_holding_period"] = (
-            f"{int(np.mean(holding_periods))}天" if holding_periods else "0天"
+            f"{int(np.mean(holding_periods))}" if holding_periods else "0"
         )
 
         # 计算持仓/空仓比例

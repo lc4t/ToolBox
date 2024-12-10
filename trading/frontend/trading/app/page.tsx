@@ -1,12 +1,12 @@
 "use client"
 
-import { useEffect, useState } from 'react';
+import { useState, useEffect } from 'react';
 import QuantTradeReport from '../components/QuantTradeReport';
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 
-// 定义类型
-interface TradeReport {
+// 定义交易数据类型
+interface TradeData {
   symbol: string;
   name: string;
   reportDate: string;
@@ -15,11 +15,25 @@ interface TradeReport {
     end: string;
   };
   latestSignal: {
-    action: "观察" | "买入" | "卖出" | "持有";
+    action: "观察" | "卖出" | "买入" | "持有";
     asset: string;
-    price: number;
     timestamp: string;
+    prices?: {
+      open: number;
+      close: number;
+      high: number;
+      low: number;
+    };
+    price?: number;
   };
+  positionInfo: {
+    entryDate: string;
+    entryPrice: number;
+    quantity: number;
+    currentValue: number;
+    profitLoss: number;
+    profitLossPercentage: number;
+  } | null;
   annualReturns: Array<{
     year: number;
     value: number;
@@ -36,7 +50,7 @@ interface TradeReport {
   }>;
   marketIndicators: Array<{
     name: string;
-    value: number;
+    value: number | string;
     description: string;
   }>;
   recentTrades: Array<{
@@ -51,57 +65,116 @@ interface TradeReport {
   }>;
   strategyParameters: Array<{
     name: string;
-    value: any;
+    value: string | number | boolean;
   }>;
   showStrategyParameters: boolean;
-  positionInfo: {
-    entryDate: string;
-    entryPrice: number;
-    quantity: number;
-    currentValue: number;
-    profitLoss: number;
-    profitLossPercentage: number;
-  } | null;
 }
 
+// 修改 normalizeData 函数，添加具体的类型
+interface RawTradeData extends Omit<TradeData, 'latestSignal'> {
+  latestSignal?: {
+    action?: string;
+    asset?: string;
+    timestamp?: string;
+    prices?: {
+      open: number;
+      close: number;
+      high: number;
+      low: number;
+    };
+    price?: number;
+  };
+}
+
+// 确保 action 字段符合类型要求
+const normalizeAction = (action: string): "观察" | "卖出" | "买入" | "持有" => {
+  // 先统一转换为大写，以处理不同的大小写情况
+  const upperAction = action.toUpperCase();
+  switch (upperAction) {
+    case "BUY":
+      return "买入";
+    case "SELL":
+      return "卖出";
+    case "HOLD":
+      return "持有";
+    case "持有":  // 处理已经是中文的情况
+      return "持有";
+    case "买入":
+      return "买入";
+    case "卖出":
+      return "卖出";
+    case "观察":
+      return "观察";
+    default:
+      return "观察";
+  }
+};
+
+// 规范化数据
+const normalizeData = (data: RawTradeData): TradeData => {
+  const latestSignal = data.latestSignal || {};
+  
+  // 如果有 price 字段但没有 prices 字段，创建一个默认的 prices 对象
+  if (latestSignal.price && !latestSignal.prices) {
+    latestSignal.prices = {
+      open: latestSignal.price,
+      close: latestSignal.price,
+      high: latestSignal.price,
+      low: latestSignal.price
+    };
+  }
+  
+  return {
+    ...data,
+    latestSignal: {
+      ...latestSignal,
+      // 确保必需字段有默认值
+      action: normalizeAction(latestSignal.action || ''),
+      asset: latestSignal.asset || data.symbol || 'Unknown',  // 使用 symbol 作为后备
+      timestamp: latestSignal.timestamp || new Date().toISOString(),  // 使用当前时间作为后备
+      prices: latestSignal.prices,
+      price: latestSignal.price
+    }
+  };
+};
+
 export default function Home() {
-  const [reports, setReports] = useState<TradeReport[]>([]);
+  const [tradeData, setTradeData] = useState<TradeData[]>([]);
   const [selectedIndex, setSelectedIndex] = useState(0);
-  const [loading, setLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    // 加载所有报告
-    async function loadReports() {
+    const loadTradeData = async () => {
       try {
-        const response = await fetch('/api/reports');
-        const data = await response.json();
-
-        // 按报告日期降序排序
-        const sortedReports = data.sort((a: TradeReport, b: TradeReport) =>
-          new Date(b.reportDate).getTime() - new Date(a.reportDate).getTime()
-        );
-
-        setReports(sortedReports);
+        setIsLoading(true);
+        const response = await fetch('/api/trade-data');
+        if (!response.ok) {
+          throw new Error('Failed to fetch data');
+        }
+        const data = (await response.json()) as RawTradeData[];
+        setTradeData(data.map(normalizeData));
       } catch (error) {
-        console.error('Failed to load reports:', error);
+        console.error('Error loading trade data:', error);
+        setError(error instanceof Error ? error.message : 'Failed to load data');
       } finally {
-        setLoading(false);
+        setIsLoading(false);
       }
-    }
+    };
 
-    loadReports();
+    loadTradeData();
   }, []);
 
-  if (loading) {
-    return <div className="flex items-center justify-center min-h-screen">
-      <p>加载中...</p>
-    </div>;
+  if (isLoading) {
+    return <div className="flex justify-center items-center min-h-screen">Loading...</div>;
   }
 
-  if (reports.length === 0) {
-    return <div className="flex items-center justify-center min-h-screen">
-      <p>没有可用的回测报告</p>
-    </div>;
+  if (error) {
+    return <div className="flex justify-center items-center min-h-screen text-red-500">{error}</div>;
+  }
+
+  if (tradeData.length === 0) {
+    return <div className="flex justify-center items-center min-h-screen">No data available</div>;
   }
 
   return (
@@ -111,18 +184,18 @@ export default function Home() {
           <CardTitle>选择交易标的</CardTitle>
         </CardHeader>
         <CardContent className="flex flex-wrap gap-2">
-          {reports.map((report, index) => (
+          {tradeData.map((data, index) => (
             <Button
-              key={report.symbol}
+              key={data.symbol}
               onClick={() => setSelectedIndex(index)}
               variant={selectedIndex === index ? "default" : "outline"}
             >
-              {report.name}（{report.latestSignal.action}）
+              {data.name}（{data.latestSignal.action}）
             </Button>
           ))}
         </CardContent>
       </Card>
-      <QuantTradeReport {...reports[selectedIndex]} />
+      <QuantTradeReport {...tradeData[selectedIndex]} />
     </main>
   );
 }
