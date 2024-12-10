@@ -1409,7 +1409,7 @@ def _format_for_json(
     # 格式化最近交易记录
     recent_trades = []
     try:
-        for trade in trades[:-1]:
+        for trade in trades[::-1]:
             recent_trades.append(
                 {
                     "date": format_value(trade.get("date")),
