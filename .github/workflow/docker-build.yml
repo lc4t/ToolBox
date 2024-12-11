@@ -1,0 +1,51 @@
+name: Build and Push Docker Image with Custom Branch Tags
+
+on:
+  push:
+    branches:
+      - dev
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 检出代码
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      # 提取分支名称和提交哈希
+      - name: Extract branch name and commit hash
+        id: vars
+        run: |
+          REPO_NAME=${{ github.event.repository.name }}
+          BRANCH_NAME=${GITHUB_REF##*/}
+          SHORT_HASH=$(git rev-parse --short HEAD)
+          echo "REPO_NAME=${REPO_NAME}" >> $GITHUB_ENV
+          echo "BRANCH_NAME=${BRANCH_NAME}" >> $GITHUB_ENV
+          echo "SHORT_HASH=${SHORT_HASH}" >> $GITHUB_ENV
+
+      # 登录到 GitHub Container Registry
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # 构建 Docker 镜像
+      - name: Build Docker image
+        run: |
+          IMAGE_NAME=ghcr.io/${{ github.repository_owner }}/${REPO_NAME}-${BRANCH_NAME}
+          TAG=${SHORT_HASH}
+          # 构建带有具体标签和 latest 标签的镜像
+          docker build -t $IMAGE_NAME:$TAG -t $IMAGE_NAME:latest .
+
+      # 推送 Docker 镜像到 GitHub Container Registry
+      - name: Push Docker image to GitHub Container Registry
+        run: |
+          IMAGE_NAME=ghcr.io/${{ github.repository_owner }}/${REPO_NAME}-${BRANCH_NAME}
+          TAG=${SHORT_HASH}
+          # 推送镜像
+          docker push $IMAGE_NAME:$TAG
+          docker push $IMAGE_NAME:latest
