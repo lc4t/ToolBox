@@ -18,7 +18,7 @@ jobs:
       - name: Extract branch name and commit hash
         id: vars
         run: |
-          REPO_NAME=${{ github.event.repository.name }}
+          REPO_NAME=toolbox
           BRANCH_NAME=${GITHUB_REF##*/}
           SHORT_HASH=$(git rev-parse --short HEAD)
           echo "REPO_NAME=${REPO_NAME}" >> $GITHUB_ENV
