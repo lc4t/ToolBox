@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - dev
+      - main
 
 jobs:
   build-and-push:
@@ -19,11 +20,13 @@ jobs:
         id: vars
         run: |
           REPO_NAME=toolbox
-          BRANCH_NAME=${GITHUB_REF##*/}
+          BRANCH_NAME=${GITHUB_REF_NAME} # 更直接的分支名称
           SHORT_HASH=$(git rev-parse --short HEAD)
+          IMAGE_NAME=ghcr.io/${{ github.repository_owner }}/${REPO_NAME}-${BRANCH_NAME}
           echo "REPO_NAME=${REPO_NAME}" >> $GITHUB_ENV
           echo "BRANCH_NAME=${BRANCH_NAME}" >> $GITHUB_ENV
           echo "SHORT_HASH=${SHORT_HASH}" >> $GITHUB_ENV
+          echo "IMAGE_NAME=${IMAGE_NAME}" >> $GITHUB_ENV
 
       # 登录到 GitHub Container Registry
       - name: Log in to GitHub Container Registry
@@ -36,16 +39,10 @@ jobs:
       # 构建 Docker 镜像
       - name: Build Docker image
         run: |
-          IMAGE_NAME=ghcr.io/${{ github.repository_owner }}/${REPO_NAME}-${BRANCH_NAME}
-          TAG=${SHORT_HASH}
-          # 构建带有具体标签和 latest 标签的镜像
-          docker build -t $IMAGE_NAME:$TAG -t $IMAGE_NAME:latest .
+          docker build -t ${IMAGE_NAME}:${SHORT_HASH} -t ${IMAGE_NAME}:latest .
 
       # 推送 Docker 镜像到 GitHub Container Registry
       - name: Push Docker image to GitHub Container Registry
         run: |
-          IMAGE_NAME=ghcr.io/${{ github.repository_owner }}/${REPO_NAME}-${BRANCH_NAME}
-          TAG=${SHORT_HASH}
-          # 推送镜像
-          docker push $IMAGE_NAME:$TAG
-          docker push $IMAGE_NAME:latest
+          docker push ${IMAGE_NAME}:${SHORT_HASH}
+          docker push ${IMAGE_NAME}:latest
