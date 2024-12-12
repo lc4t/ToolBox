@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any
 from db import DBClient
 import requests
+import time
 # 加载环境变量配置
 from dotenv import load_dotenv
 from jinja2 import (Environment, FileSystemLoader, PackageLoader,
@@ -120,6 +121,59 @@ class WecomNotifyTemplate(NotifyTemplate):
             return False
 
 
+class EmailNotifier:
+    def __init__(self, smtp_server: str, smtp_port: int, username: str, password: str):
+        self.smtp_server = smtp_server
+        self.smtp_port = smtp_port
+        self.username = username
+        self.password = password
+        self.max_retries = 1
+        self.retry_delay = 5  # 秒
+
+    def send(self, to_addrs: List[str], subject: str, content: str) -> bool:
+        """发送邮件，带重试机制"""
+        for attempt in range(self.max_retries):
+            try:
+                # 创建SMTP连接
+                with smtplib.SMTP_SSL(self.smtp_server, self.smtp_port) as server:
+                    # 登录
+                    server.login(self.username, self.password)
+                    
+                    # 创建邮件
+                    msg = MIMEMultipart()
+                    msg['From'] = self.username
+                    msg['To'] = ', '.join(to_addrs)
+                    msg['Subject'] = subject
+                    
+                    # 添加正文
+                    msg.attach(MIMEText(content, 'plain', 'utf-8'))
+                    
+                    # 发送邮件
+                    server.send_message(msg)
+                    
+                    logger.info(f"Successfully sent email to {to_addrs}")
+                    return True
+                    
+            except smtplib.SMTPServerDisconnected as e:
+                logger.warning(f"SMTP Server disconnected (attempt {attempt + 1}/{self.max_retries}): {e}")
+                if attempt < self.max_retries - 1:
+                    time.sleep(self.retry_delay)
+                continue
+                
+            except smtplib.SMTPException as e:
+                logger.error(f"SMTP error (attempt {attempt + 1}/{self.max_retries}): {e}")
+                if attempt < self.max_retries - 1:
+                    time.sleep(self.retry_delay)
+                continue
+                
+            except Exception as e:
+                logger.error(f"Unexpected error while sending email: {e}")
+                return False
+                
+        logger.error(f"Failed to send email after {self.max_retries} attempts")
+        return False
+
+
 class EmailNotifyTemplate(NotifyTemplate):
     """邮件通知模板"""
 
@@ -204,11 +258,14 @@ class EmailNotifyTemplate(NotifyTemplate):
             msg["To"] = ", ".join(self.recipients)
             msg.attach(MIMEText(message, "html"))
 
-            with smtplib.SMTP(self.smtp_server, self.smtp_port) as server:
-                server.starttls()
-                server.login(self.smtp_username, self.smtp_password)
-                server.send_message(msg)
-            return True
+            notifier = EmailNotifier(
+                smtp_server=self.smtp_server,
+                smtp_port=self.smtp_port,
+                username=self.smtp_username,
+                password=self.smtp_password
+            )
+            
+            return notifier.send(self.recipients, msg["Subject"], message)
         except Exception as e:
             logger.error(f"Failed to send email notification: {e}")
             return False

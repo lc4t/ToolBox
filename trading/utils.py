@@ -337,7 +337,7 @@ def get_stock_name(db_client: DBClient, symbol: str) -> str:
         logger.error(f"Error getting stock name: {e}")
     return symbol  # 如果获取失败，返回股票代码作为名称 
 
-def format_for_json(metrics: dict, trades: list, next_signal: dict, params: dict, symbol: str, stock_name: str) -> dict:
+def format_for_json(metrics: dict, trades: list, next_signal: dict, params: dict, symbol: str, stock_name: str, initial_capital: float) -> dict:
     """格式化回测结果为JSON格式"""
     # 从数据库获取最新价格
     db_client = DBClient()
@@ -404,7 +404,7 @@ def format_for_json(metrics: dict, trades: list, next_signal: dict, params: dict
              "description": "当前净值距离历史最高点的跌幅，反映当前的风险状况"},
             {"name": "波动率", "value": round(metrics["volatility"], 2),
              "description": "收益率的标准差，反映策略的波动性和风险大小，越小越稳定"},
-            {"name": "最大亏损", "value": round(metrics["max_loss"], 2),
+            {"name": "最大亏损", "value": round(metrics["max_loss"] * initial_capital / 100, 2),  # 转换为实际金额
              "description": "单笔交易中的最大亏损金额，反映策略的风险控制能力"},
             {"name": "Beta系数", "value": round(metrics.get("beta", 0), 2),
              "description": "策略收益相对于市场基准的敏感度，=1表示与市场同步，<1表示波动小于市场"},

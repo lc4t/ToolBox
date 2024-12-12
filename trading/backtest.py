@@ -1385,6 +1385,7 @@ def main():
             params_dict,
             args.symbol,
             stock_name,
+            args.initial_capital,
         )
 
         # 输出到JSON文件

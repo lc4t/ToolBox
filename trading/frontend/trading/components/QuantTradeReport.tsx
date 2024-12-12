@@ -4,6 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { formatMoney } from '../utils/formatMoney';
 
 interface TradeSignal {
   action: "观察" | "卖出" | "买入" | "持有";
@@ -101,7 +102,7 @@ export default function QuantTradeReport({
         </CardHeader>
         <CardContent>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-4">
-            <LatestSignalSection signal={latestSignal} />
+            <LatestSignalSection signal={latestSignal} symbol={symbol} />
             <PositionInfoSection info={positionInfo} />
           </div>
         </CardContent>
@@ -109,93 +110,89 @@ export default function QuantTradeReport({
 
       <AnnualReturnsSection returns={annualReturns} />
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        <MetricsSection title="收益指标" metrics={returnMetrics} />
-        <MetricsSection title="风险指标" metrics={riskMetrics} />
-        <MetricsSection title="风险调整收益" metrics={riskAdjustedMetrics} />
+        <MetricsSection title="收益指标" metrics={returnMetrics} symbol={symbol} />
+        <MetricsSection title="风险指标" metrics={riskMetrics} symbol={symbol} />
+        <MetricsSection title="风险调整收益" metrics={riskAdjustedMetrics} symbol={symbol} />
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        <MetricsSection title="交易统计" metrics={tradingMetrics} />
-        <MetricsSection title="持仓特征" metrics={positionMetrics} />
-        <MetricsSection title="时间统计" metrics={timeMetrics} />
+        <MetricsSection title="交易统计" metrics={tradingMetrics} symbol={symbol} />
+        <MetricsSection title="持仓特征" metrics={positionMetrics} symbol={symbol} />
+        <MetricsSection title="时间统计" metrics={timeMetrics} symbol={symbol} />
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <MetricsSection title="基准对比" metrics={benchmarkMetrics} />
+        <MetricsSection title="基准对比" metrics={benchmarkMetrics} symbol={symbol} />
       </div>
 
-      <RecentTradesSection trades={recentTrades} />
+      <RecentTradesSection trades={recentTrades} symbol={symbol} />
       <StrategyParametersSection parameters={strategyParameters} show={showStrategyParameters} />
     </div>
   );
 }
 
-function LatestSignalSection({ signal }: { signal: TradeSignal }) {
+function LatestSignalSection({ signal, symbol }: { signal: TradeSignal, symbol: string }) {
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>最新信号</CardTitle>
-      </CardHeader>
-      <CardContent>
-        <div className="space-y-4">
-          <div className="flex justify-between items-center">
-            <div>
-              <p className="text-lg font-semibold">{signal.asset}</p>
-              <p className="text-sm text-muted-foreground">
-                {formatDate(signal.timestamp)} 交易日
-              </p>
-            </div>
-            <Badge
-              variant={
-                signal.action === '买入'
-                  ? 'default'
-                  : signal.action === '卖出'
-                  ? 'destructive'
-                  : 'secondary'
-              }
-            >
-              {signal.action}
-            </Badge>
+    <div>
+      <h3 className="text-lg font-semibold mb-4">最新信号</h3>
+      <div className="space-y-4">
+        <div className="flex justify-between items-center">
+          <div>
+            <p className="text-lg font-semibold">{signal.asset}</p>
+            <p className="text-sm text-muted-foreground">
+              {formatDate(signal.timestamp)} 交易日
+            </p>
           </div>
-          
-          {signal.prices ? (
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <p className="text-sm text-muted-foreground">开盘</p>
-                <p className="text-lg font-semibold">
-                  {signal.prices.open > 0 ? `¥${signal.prices.open.toFixed(3)}` : '暂无'}
-                </p>
-              </div>
-              <div>
-                <p className="text-sm text-muted-foreground">收盘</p>
-                <p className="text-lg font-semibold">
-                  {signal.prices.close > 0 ? `¥${signal.prices.close.toFixed(3)}` : '暂无'}
-                </p>
-              </div>
-              <div>
-                <p className="text-sm text-muted-foreground">最高</p>
-                <p className="text-lg font-semibold text-green-600">
-                  {signal.prices.high > 0 ? `¥${signal.prices.high.toFixed(3)}` : '暂无'}
-                </p>
-              </div>
-              <div>
-                <p className="text-sm text-muted-foreground">最低</p>
-                <p className="text-lg font-semibold text-red-600">
-                  {signal.prices.low > 0 ? `¥${signal.prices.low.toFixed(3)}` : '暂无'}
-                </p>
-              </div>
-            </div>
-          ) : (
+          <Badge
+            variant={
+              signal.action === '买入'
+                ? 'default'
+                : signal.action === '卖出'
+                ? 'destructive'
+                : 'secondary'
+            }
+          >
+            {signal.action}
+          </Badge>
+        </div>
+
+        {signal.prices ? (
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
             <div>
-              <p className="text-sm text-muted-foreground">最新价格</p>
+              <p className="text-sm text-muted-foreground">开盘</p>
               <p className="text-lg font-semibold">
-                {signal.price ? `¥${signal.price.toFixed(3)}` : '暂无价格'}
+                {signal.prices.open > 0 ? formatMoney(signal.prices.open, symbol) : '暂无'}
               </p>
             </div>
-          )}
-        </div>
-      </CardContent>
-    </Card>
+            <div>
+              <p className="text-sm text-muted-foreground">最高</p>
+              <p className="text-lg font-semibold text-green-600">
+                {signal.prices.high > 0 ? formatMoney(signal.prices.high, symbol) : '暂无'}
+              </p>
+            </div>
+            <div>
+              <p className="text-sm text-muted-foreground">最低</p>
+              <p className="text-lg font-semibold text-red-600">
+                {signal.prices.low > 0 ? formatMoney(signal.prices.low, symbol) : '暂无'}
+              </p>
+            </div>
+            <div>
+              <p className="text-sm text-muted-foreground">收盘</p>
+              <p className="text-lg font-semibold">
+                {signal.prices.close > 0 ? formatMoney(signal.prices.close, symbol) : '暂无'}
+              </p>
+            </div>
+          </div>
+        ) : signal.price ? (
+          <div>
+            <p className="text-sm text-muted-foreground">最新价格</p>
+            <p className="text-lg font-semibold">
+              {formatMoney(signal.price, symbol)}
+            </p>
+          </div>
+        ) : null}
+      </div>
+    </div>
   );
 }
 
@@ -286,7 +283,53 @@ function AnnualReturnsSection({ returns }: { returns: { year: number; value: num
   );
 }
 
-function MetricsSection({ title, metrics }: { title: string; metrics: Metric[] }) {
+function MetricsSection({ title, metrics, symbol }: { title: string; metrics: Metric[]; symbol: string }) {
+  const formatValue = (metric: Metric) => {
+    const value = metric.value;
+    
+    if (typeof value === 'string' && value.includes('天')) {
+      return value;
+    }
+
+    const percentageMetrics = [
+      '年化收益率', '复合年化收益', 'Alpha', '最大回撤', '当前回撤', 
+      '波动率', '胜率', '持仓比例'
+    ];
+    
+    const moneyMetrics = [
+      '总盈亏', '平均盈利', '平均亏损', '最大亏损'
+    ];
+    
+    const ratioMetrics = [
+      '最新净值', '夏普比率', '索提诺比率', 'Calmar比率', 'VWR', 'SQN',
+      'Beta系数', '盈亏比'
+    ];
+    
+    const countMetrics = [
+      '总交易次数', '盈利交易', '亏损交易', '最大连胜', '最大连亏'
+    ];
+    
+    const dayMetrics = [
+      '运行天数', '平均持仓'
+    ];
+
+    if (typeof value === 'number') {
+      if (percentageMetrics.includes(metric.name)) {
+        return `${value.toFixed(2)}%`;
+      } else if (moneyMetrics.includes(metric.name)) {
+        return formatMoney(value, symbol);
+      } else if (ratioMetrics.includes(metric.name)) {
+        return value.toFixed(2);
+      } else if (countMetrics.includes(metric.name)) {
+        return value.toLocaleString();
+      } else if (dayMetrics.includes(metric.name)) {
+        return `${value}天`;
+      }
+    }
+    
+    return value;
+  };
+
   return (
     <Card>
       <CardHeader>
@@ -303,7 +346,7 @@ function MetricsSection({ title, metrics }: { title: string; metrics: Metric[] }
                     ? metric.value > 0 ? 'text-green-600' : metric.value < 0 ? 'text-red-600' : ''
                     : ''
                 }>
-                  {typeof metric.value === 'number' ? metric.value.toFixed(2) : metric.value}
+                  {formatValue(metric)}
                 </span>
               </div>
               {metric.description && (
@@ -317,7 +360,7 @@ function MetricsSection({ title, metrics }: { title: string; metrics: Metric[] }
   );
 }
 
-function RecentTradesSection({ trades }: { trades: Trade[] }) {
+function RecentTradesSection({ trades, symbol }: { trades: Trade[]; symbol: string }) {
   const [showAllTrades, setShowAllTrades] = useState(false);
   const [sortConfig, setSortConfig] = useState<{
     key: keyof Trade;
@@ -369,7 +412,7 @@ function RecentTradesSection({ trades }: { trades: Trade[] }) {
   const formatProfitLoss = (trade: Trade) => {
     if (trade.action !== 'SELL') return '—';
     
-    const pnlText = `¥${trade.profitLoss.toFixed(2)}`;
+    const pnlText = formatMoney(trade.profitLoss, symbol);
     const pnlPercentage = trade.profitLossPercentage;
     
     const className = trade.profitLoss >= 0 ? 'text-green-600' : 'text-red-600';
@@ -444,11 +487,15 @@ function RecentTradesSection({ trades }: { trades: Trade[] }) {
                     )}
                   </TableCell>
                   <TableCell>{trade.quantity.toLocaleString()}</TableCell>
-                  <TableCell>¥{trade.value.toFixed(2)}</TableCell>
+                  <TableCell>
+                    {formatMoney(trade.value, symbol)}
+                  </TableCell>
                   <TableCell>
                     {formatProfitLoss(trade)}
                   </TableCell>
-                  <TableCell>¥{trade.totalValue.toFixed(2)}</TableCell>
+                  <TableCell>
+                    {formatMoney(trade.totalValue, symbol)}
+                  </TableCell>
                   <TableCell className="max-w-md truncate" title={trade.reason}>
                     {trade.reason}
                   </TableCell>
