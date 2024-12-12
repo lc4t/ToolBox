@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react';
 import QuantTradeReport from '../components/QuantTradeReport';
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { buildTime } from '../utils/buildInfo';
+import { config } from '../utils/config';
 
 // 定义交易数据类型
 interface TradeData {
@@ -223,7 +223,7 @@ export default function Home() {
           <div className="flex justify-between items-center">
             <CardTitle>选择交易标的</CardTitle>
             <div className="text-sm text-muted-foreground bg-muted px-3 py-1 rounded-md">
-              构建时间: {new Date(buildTime).toLocaleString('zh-CN', {
+              构建时间: {new Date(config.buildTime).toLocaleString('zh-CN', {
                 year: 'numeric',
                 month: '2-digit',
                 day: '2-digit',

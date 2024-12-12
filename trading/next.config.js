@@ -5,12 +5,23 @@ const path = require('path');
 const nextConfig = {
   webpack: (config, { buildId, dev, isServer, defaultLoaders, webpack }) => {
     if (!dev && isServer) {
-      // 在生产构建时更新buildInfo.ts
       const buildTime = new Date().toISOString();
-      const buildInfoPath = path.join(__dirname, 'trading/utils/buildInfo.ts');
+      const gaId = process.env.NEXT_PUBLIC_GA_ID;
+      
+      // 更新配置文件
+      const configPath = path.join(__dirname, 'trading/utils/config.ts');
       fs.writeFileSync(
-        buildInfoPath,
-        `// 这个文件会在构建时被更新\nexport const buildTime = '${buildTime}';\n`
+        configPath,
+        `// 这个文件会在构建时被更新
+interface Config {
+  googleAnalyticsId?: string;
+  buildTime: string;
+}
+
+export const config: Config = {
+  googleAnalyticsId: ${gaId ? `"${gaId}"` : 'undefined'},
+  buildTime: "${buildTime}"
+};\n`
       );
     }
     return config;
