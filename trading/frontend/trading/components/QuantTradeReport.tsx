@@ -138,6 +138,20 @@ export default function QuantTradeReport({
 }
 
 function LatestSignalSection({ signal, symbol }: { signal: TradeSignal, symbol: string }) {
+  const getBadgeVariant = (action: string) => {
+    switch (action) {
+      case "持有":
+        return "hold";
+      case "买入":
+        return "buy";
+      case "卖出":
+        return "sell";
+      case "观察":
+      default:
+        return "watch";
+    }
+  };
+
   return (
     <div>
       <h3 className="text-lg font-semibold mb-4">最新信号</h3>
@@ -149,15 +163,7 @@ function LatestSignalSection({ signal, symbol }: { signal: TradeSignal, symbol: 
               {formatDate(signal.timestamp)} 交易日
             </p>
           </div>
-          <Badge
-            variant={
-              signal.action === '买入'
-                ? 'default'
-                : signal.action === '卖出'
-                  ? 'destructive'
-                  : 'secondary'
-            }
-          >
+          <Badge variant={getBadgeVariant(signal.action)}>
             {signal.action}
           </Badge>
         </div>

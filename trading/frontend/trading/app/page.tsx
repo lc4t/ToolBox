@@ -134,7 +134,7 @@ const normalizeAction = (action: string): "观察" | "卖出" | "买入" | "持�
 // 规范化数据
 const normalizeData = (data: RawTradeData): TradeData => {
   const latestSignal = data.latestSignal || {};
-  
+
   // 如果有 price 字段但没有 prices 字段，创建一个默认的 prices 对象
   if (latestSignal.price && !latestSignal.prices) {
     latestSignal.prices = {
@@ -144,7 +144,7 @@ const normalizeData = (data: RawTradeData): TradeData => {
       low: latestSignal.price
     };
   }
-  
+
   return {
     ...data,
     returnMetrics: data.returnMetrics || [],
@@ -163,6 +163,21 @@ const normalizeData = (data: RawTradeData): TradeData => {
       price: latestSignal.price
     }
   };
+};
+
+// 在 Button 组件中添加映射函数
+const getButtonVariant = (action: string) => {
+  switch (action) {
+    case "持有":
+      return "hold";
+    case "买入":
+      return "buy";
+    case "卖出":
+      return "sell";
+    case "观察":
+    default:
+      return "watch";
+  }
 };
 
 export default function Home() {
@@ -239,15 +254,19 @@ export default function Home() {
             <Button
               key={data.symbol}
               onClick={() => setSelectedIndex(index)}
-              variant={selectedIndex === index ? "default" : "outline"}
+              variant={
+                selectedIndex === index
+                  ? getButtonVariant(data.latestSignal?.action || '观察')  // 选中状态使用深色
+                  : getButtonVariant(data.latestSignal?.action || '观察')  // 未选中状态也使用对应颜色
+              }
             >
               {data.name}（{data.latestSignal?.action || '观察'}）
             </Button>
           ))}
         </CardContent>
       </Card>
-      
-      <QuantTradeReport 
+
+      <QuantTradeReport
         {...currentData}
         showStrategyParameters={currentData.showStrategyParameters || false}
       />
