@@ -27,6 +27,7 @@ from utils import (
     print_best_results,
     get_stock_name,
     format_params_string,
+    format_for_json,
 )
 
 logger.remove()  # 移除默认的处理器
@@ -405,11 +406,22 @@ class DualMAStrategy(bt.Strategy):
         """预测下一个交易信号"""
         current_position = bool(self.position)
 
+        # 获取最新价格信息（从数据中获取最后一个数据点）
+        latest_date = self.data.datetime.datetime()
+        latest_prices = {
+            "open": self.data.open[-1],  # 使用-1获取最后一个数据点
+            "close": self.data.close[-1],
+            "high": self.data.high[-1],
+            "low": self.data.low[-1]
+        }
+        
         signal = {
             "action": "观察",  # 默认动作
             "conditions": [],
             "stop_loss": None,
             "position_info": None,
+            "prices": latest_prices,
+            "timestamp": latest_date.strftime("%Y-%m-%d")  # 添加时间戳
         }
 
         # 获取最新的技术指标数据
@@ -486,6 +498,61 @@ class DualMAStrategy(bt.Strategy):
                 )
 
         return signal
+
+    def _generate_report(self, strat, initial_capital, final_value, trade_records):
+        """生成回测报告"""
+        last_trade_date = strat.data.datetime.datetime()
+
+        # 收集分析器结果
+        analyzers_results = {
+            "trades": strat.analyzers.trades.get_analysis(),
+            "sharpe": strat.analyzers.sharpe.get_analysis(),
+            "drawdown": strat.analyzers.drawdown.get_analysis(),
+            "vwr": strat.analyzers.vwr.get_analysis(),
+            "last_date": last_trade_date,
+        }
+
+        # 使用性能分析器计算指标
+        metrics = PerformanceAnalyzer.calculate_metrics(
+            initial_capital, final_value, trade_records, analyzers_results
+        )
+
+        # 计算总收益率
+        total_return = ((final_value / initial_capital) - 1) * 100
+
+        # 预测下一个交易信号 - 这里修改调用方式
+        next_signal = strat._predict_next_signal()  # 直接调用strat的方法
+
+        # 转换所有交易记录
+        all_trades = [
+            {
+                "date": t.date.strftime("%Y-%m-%d %H:%M:%S"),
+                "action": t.action,
+                "price": t.price,
+                "size": t.size,
+                "value": t.value,
+                "commission": t.commission,
+                "pnl": t.pnl,
+                "total_value": t.total_value,
+                "signal_reason": t.signal_reason,
+                "cash": t.cash,
+            }
+            for t in trade_records
+        ]
+
+        # 只取最近20条用于邮件通知
+        recent_trades = all_trades[-20:] if all_trades else []
+
+        return {
+            "initial_capital": initial_capital,
+            "final_value": final_value,
+            "total_return": total_return,
+            "metrics": metrics,
+            "all_trades": all_trades,
+            "trades": recent_trades,
+            "next_signal": next_signal,
+            "last_trade_date": last_trade_date,
+        }
 
 
 class BacktestRunner:
@@ -581,8 +648,8 @@ class BacktestRunner:
         return data_feed
 
     def _generate_report(self, strat, initial_capital, final_value, trade_records):
-        # 获取最后一个交易日期（从数据中获取，而不是用户指定的日期）
-        last_trade_date = strat.data.datetime.datetime()  # 获取最后一个数据点的日期
+        """生成回测报告"""
+        last_trade_date = strat.data.datetime.datetime()
 
         # 收集分析器结果
         analyzers_results = {
@@ -590,7 +657,7 @@ class BacktestRunner:
             "sharpe": strat.analyzers.sharpe.get_analysis(),
             "drawdown": strat.analyzers.drawdown.get_analysis(),
             "vwr": strat.analyzers.vwr.get_analysis(),
-            "last_date": last_trade_date,  # 添加最后交易日
+            "last_date": last_trade_date,
         }
 
         # 使用性能分析器计算指标
@@ -601,8 +668,8 @@ class BacktestRunner:
         # 计算总收益率
         total_return = ((final_value / initial_capital) - 1) * 100
 
-        # 预测下一个交易信号
-        next_signal = self._predict_next_signal(strat)
+        # 预测下一个交易信号 - 这里修改调用方式
+        next_signal = strat._predict_next_signal()  # 直接调用strat的方法
 
         # 转换所有交易记录
         all_trades = [
@@ -629,21 +696,32 @@ class BacktestRunner:
             "final_value": final_value,
             "total_return": total_return,
             "metrics": metrics,
-            "all_trades": all_trades,  # 所有交易记录
-            "trades": recent_trades,  # 最近20条交易记录
+            "all_trades": all_trades,
+            "trades": recent_trades,
             "next_signal": next_signal,
-            "last_trade_date": last_trade_date,  # 添加最后交易日期
+            "last_trade_date": last_trade_date,
         }
 
     def _predict_next_signal(self, strat) -> Dict:
         """预测下一个交易信号"""
         current_position = bool(strat.position)
 
+        # 获取最新价格信息（从数据中获取最后一个数据点）
+        latest_date = strat.data.datetime.datetime()
+        latest_prices = {
+            "open": strat.data.open[-1],  # 使用-1获取最后一个数据点
+            "close": strat.data.close[-1],
+            "high": strat.data.high[-1],
+            "low": strat.data.low[-1]
+        }
+        
         signal = {
             "action": "观察",  # 默认动作
             "conditions": [],
             "stop_loss": None,
             "position_info": None,
+            "prices": latest_prices,
+            "timestamp": latest_date.strftime("%Y-%m-%d")  # 添加时间戳
         }
 
         # 获取最新的技术指标数据
@@ -1043,10 +1121,18 @@ def main():
 
     args = parser.parse_args()
 
-    # # 配置日志级别
-    # logger.remove()  # 移除默认的处理器
-    # log_level = "DEBUG" if args.debug else "INFO"
-    # logger.add(sys.stderr, level=log_level)
+    # 如果没有指定结束日期，使用当前日期
+    if not args.end_date:
+        args.end_date = datetime.now().strftime("%Y-%m-%d")
+
+    # 从数据库获取最新的交易日期
+    db_client = DBClient()
+    latest_data = db_client.query_latest_by_symbol(args.symbol)  # 使用现有的方法获取最新数据
+    
+    if latest_data:
+        args.end_date = latest_data["date"].strftime("%Y-%m-%d")
+        logger.info(f"使用数据库中的最新日期: {args.end_date}")
+
 
     # 检查是否有范围参数
     has_ranges = any(
@@ -1246,13 +1332,13 @@ def main():
             "adr_multiplier": args.adr_multiplier,
         }
 
-        json_data = _format_for_json(
+        json_data = format_for_json(
             best_result["metrics"],
             best_result["all_trades"],
             best_result["next_signal"],
             params_dict,
             args.symbol,
-            stock_name,  # 添加股票名称参数
+            stock_name,
         )
 
         # 输出到JSON文件

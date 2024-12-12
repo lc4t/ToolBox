@@ -27,39 +27,63 @@ def print_metrics(metrics: dict):
     logger.info(f"{'性能指标':^{SEPARATOR_WIDTH}}")
     logger.info(SECTION_SEPARATOR)
 
-    # 使用两列布局
+    # 使用三列布局
     metrics_layout = [
+        # 基础指标
         (
             "最新净值",
             f"{metrics['latest_nav']:>12.2f}",
             "年化收益率",
             f"{metrics['annual_return']:>12.2f}%",
+            "复合年化收益",
+            f"{metrics['cagr']:>12.2f}%",
         ),
+        # 市场指标
+        (
+            "总交易额",
+            f"{metrics.get('total_trade_value', 0):>12.2f}",
+            "买入总额",
+            f"{metrics.get('total_buy_value', 0):>12.2f}",
+            "卖出总额",
+            f"{metrics.get('total_sell_value', 0):>12.2f}",
+        ),
+        (
+            "换手率",
+            f"{metrics.get('turnover_rate', 0):>12.2f}%",
+            "日均交易额",
+            f"{metrics.get('avg_trade_value', 0):>12.2f}",
+            "交易频率",
+            f"{metrics.get('trade_frequency', 0):>12.2f}",
+        ),
+        # 交易统计
         (
             "总交易次数",
             f"{metrics['total_trades']:>12d}",
             "胜率",
             f"{metrics['win_rate']:>12.2f}%",
+            "盈亏比",
+            f"{metrics['profit_factor']:>12.2f}",
         ),
         (
             "盈利交易",
             f"{metrics['won_trades']:>12d}",
             "亏损交易",
             f"{metrics['lost_trades']:>12d}",
+            "总盈亏",
+            f"{metrics['total_pnl']:>12.2f}",
         ),
         (
             "平均盈利",
             f"{metrics['avg_won']:>12.2f}",
             "平均亏损",
             f"{metrics['avg_lost']:>12.2f}",
+            "持仓比例",
+            f"{metrics['holding_ratio']:>12.2f}%",
         ),
+        # 风险指标
         (
             "夏普比率",
             f"{metrics['sharpe_ratio']:>12.2f}",
-            "盈亏比",
-            f"{metrics['profit_factor']:>12.2f}",
-        ),
-        (
             "最大回撤",
             f"{metrics['max_drawdown']:>12.2f}%",
             "当前回撤",
@@ -68,19 +92,64 @@ def print_metrics(metrics: dict):
         (
             "Calmar比率",
             f"{metrics['calmar_ratio']:>12.2f}",
-            "VWR",
-            f"{metrics['vwr']:>12.2f}",
+            "索提诺比率",
+            f"{metrics.get('sortino_ratio', 0):>12.2f}",
+            "信息比率",
+            f"{metrics.get('information_ratio', 0):>12.2f}",
         ),
         (
+            "Beta",
+            f"{metrics.get('beta', 0):>12.2f}",
+            "Alpha",
+            f"{metrics.get('alpha', 0):>12.2f}%",
+            "波动率",
+            f"{metrics.get('volatility', 0):>12.2f}%",
+        ),
+        (
+            "VWR",
+            f"{metrics['vwr']:>12.2f}",
             "SQN",
             f"{metrics['sqn']:>12.2f}",
+            "最大亏损",
+            f"{metrics.get('max_loss', 0):>12.2f}",
+        ),
+        # 连续交易统计
+        (
+            "最大连胜",
+            f"{metrics['max_consecutive_wins']:>12d}",
+            "最大连亏",
+            f"{metrics['max_consecutive_losses']:>12d}",
+            "平均持仓",
+            f"{metrics['avg_holding_period']:>12}天",
+        ),
+        # 时间统计
+        (
             "运行天数",
             f"{metrics['running_days']:>12d}",
+            "开始日期",
+            f"{metrics['start_date'].strftime('%Y-%m-%d'):>12}",
+            "结束日期", 
+            f"{metrics['end_date'].strftime('%Y-%m-%d'):>12}",
         ),
     ]
 
+    # 打印三列布局
     for row in metrics_layout:
-        logger.info(f"{row[0]:<12}{row[1]:<16}{row[2]:<12}{row[3]}")
+        logger.info(f"{row[0]:<12}{row[1]:<16}{row[2]:<12}{row[3]:<16}{row[4]:<12}{row[5]}")
+
+    # 打印年度收益率
+    if "yearly_returns" in metrics:
+        logger.info(SUBSECTION_SEPARATOR)
+        logger.info("年度收益率:")
+        for year, return_rate in metrics["yearly_returns"].items():
+            logger.info(f"{year}年: {return_rate:>12.2f}%")
+
+    # 打印月度收益率（如果有）
+    if "monthly_returns" in metrics:
+        logger.info(SUBSECTION_SEPARATOR)
+        logger.info("月度收益率:")
+        for month, return_rate in metrics["monthly_returns"].items():
+            logger.info(f"{month}: {return_rate:>12.2f}%")
 
 def print_combination_result(idx: int, result: dict):
     """格式化打印单个参数组合的结果"""
@@ -255,3 +324,193 @@ def get_stock_name(db_client: DBClient, symbol: str) -> str:
     except Exception as e:
         logger.error(f"Error getting stock name: {e}")
     return symbol  # 如果获取失败，返回股票代码作为名称 
+
+def format_for_json(
+    metrics: dict,
+    trades: list,
+    next_signal: dict,
+    params: dict,
+    symbol: str,
+    stock_name: str,
+) -> dict:
+    """格式化回测结果为JSON格式"""
+    # 从数据库获取最新价格
+    db_client = DBClient()
+    latest_data = db_client.query_latest_by_symbol(symbol)
+    
+    if latest_data:
+        latest_prices = {
+            "open": round(latest_data["open_price"], 3),
+            "close": round(latest_data["close_price"], 3),
+            "high": round(latest_data["high"], 3),
+            "low": round(latest_data["low"], 3)
+        }
+        latest_date = latest_data["date"].strftime("%Y-%m-%d")
+    else:
+        # 如果无法获取数据库数据，使用next_signal中的价格
+        latest_prices = next_signal.get("prices", {})
+        latest_date = next_signal.get("timestamp", datetime.now().strftime("%Y-%m-%d"))
+
+    # 基础信息
+    result = {
+        "symbol": symbol,
+        "name": stock_name,
+        "reportDate": datetime.now().strftime("%Y-%m-%d"),
+        "dateRange": {
+            "start": metrics["start_date"].strftime("%Y-%m-%d"),
+            "end": latest_date,  # 使用数据库中的最新日期
+        },
+        "latestSignal": {
+            "action": next_signal["action"],
+            "asset": stock_name,
+            "timestamp": latest_date,  # 使用数据库中的最新日期
+            "prices": latest_prices,  # 使用数据库中的最新价格
+        },
+        "positionInfo": next_signal.get("position_info"),
+        
+        # 年度收益率
+        "annualReturns": [
+            {
+                "year": int(year),
+                "value": round(value, 3)  # 保留3位小数
+            }
+            for year, value in metrics.get("yearly_returns", {}).items()
+        ],
+        
+        # 性能指标
+        "performanceMetrics": [
+            {
+                "name": "夏普比率",
+                "value": round(metrics["sharpe_ratio"], 3),
+                "description": "衡量投资组合的超额回报与波动性的比率。大于1表示较好，小于0表示不佳。"
+            },
+            {
+                "name": "最大回撤",
+                "value": round(metrics["max_drawdown"], 3),
+                "description": "历史最大的亏损幅度，反映策略的风险承受能力。越小越好。"
+            },
+            {
+                "name": "总交易次数",
+                "value": metrics["total_trades"],  # 整数不需要round
+                "description": "策略执行期间的总交易次数。反映策略的交易频率。"
+            },
+            {
+                "name": "胜率",
+                "value": round(metrics["win_rate"], 3),
+                "description": "盈利交易占总交易的比例。反映策略的准确性。"
+            },
+            {
+                "name": "平均盈利",
+                "value": round(metrics["avg_won"], 3),
+                "description": "每笔盈利交易的平均收益"
+            },
+            {
+                "name": "平均亏损",
+                "value": round(metrics["avg_lost"], 3),
+                "description": "每笔亏损交易的平均损失"
+            },
+            {
+                "name": "盈亏比",
+                "value": round(metrics["profit_factor"], 3),
+                "description": "平均盈利与平均亏损的比值"
+            },
+            {
+                "name": "最大连续盈利次数",
+                "value": metrics["max_consecutive_wins"],  # 整数不需要round
+                "description": "最多连续盈利的交易次数"
+            },
+            {
+                "name": "最大连续亏损次数",
+                "value": metrics["max_consecutive_losses"],  # 整数不需要round
+                "description": "最多连续亏损的交易次数"
+            }
+        ],
+        
+        # 风险指标
+        "riskMetrics": [
+            {
+                "name": "Calmar比率",
+                "value": round(metrics["calmar_ratio"], 3),
+                "description": "年化收益率与最大回撤的比值，反映收益与风险的平衡。大于1表示较好，大于3表示优秀。"
+            },
+            {
+                "name": "当前回撤",
+                "value": round(metrics["current_drawdown"], 3),
+                "description": "当前亏损相对历史最高点的百分比。"
+            },
+            {
+                "name": "VWR指标",
+                "value": round(metrics["vwr"], 3),
+                "description": "波动率加权收益率，综合考虑收益和波动性。通常大于5表示较好。"
+            },
+            {
+                "name": "SQN指标",
+                "value": round(metrics["sqn"], 3),
+                "description": "系统质量指数，衡量交易系统的稳定性。大于2表示较好，大于3表示优秀。"
+            },
+            {
+                "name": "波动率",
+                "value": round(metrics.get("volatility", 0), 3),
+                "description": "收益率的标准差"
+            },
+            {
+                "name": "Beta系数",
+                "value": round(metrics.get("beta", 0), 3),
+                "description": "相对于大盘的波动程度"
+            }
+        ],
+        
+        # 市场指标
+        "marketIndicators": [
+            {
+                "name": "年化收益率",
+                "value": round(metrics["annual_return"], 3),
+                "description": "将总收益率换算成年化收益率，便于与其他投资品比较。"
+            },
+            {
+                "name": "累计收益",
+                "value": round(metrics["total_pnl"], 3),
+                "description": "从策略开始到现在的总收益。"
+            },
+            {
+                "name": "累计收益率",
+                "value": round((metrics["latest_nav"] - 1) * 100, 3),
+                "description": "从策略开始到现在的总收益率"
+            },
+            {
+                "name": "年化夏普比率",
+                "value": round(metrics["sharpe_ratio"], 3),
+                "description": "年化超额收益与年化波动率之比"
+            },
+            {
+                "name": "最长回撤期",
+                "value": round(metrics["max_drawdown"], 3),
+                "description": "从最大回撤开始到恢复所需的最长时间（天）"
+            },
+            {
+                "name": "平均持仓时间",
+                "value": f"{metrics['avg_holding_period']}天",
+                "description": "持仓天数占总天数的比例，反映策略的持仓效率。"
+            }
+        ],
+        
+        # 最近交易记录
+        "recentTrades": [
+            {
+                "date": trade["date"],
+                "action": trade["action"],
+                "price": round(trade["price"], 3),
+                "quantity": trade["size"],
+                "value": round(trade["value"], 3),
+                "profitLoss": round(trade["pnl"], 3),
+                "totalValue": round(trade["total_value"], 3),
+                "reason": trade["signal_reason"]
+            }
+            for trade in trades[-30:]  # 保留最近30条记录
+        ],
+        
+        "strategyParameters": None,
+        "showStrategyParameters": False
+    }
+    
+    return result

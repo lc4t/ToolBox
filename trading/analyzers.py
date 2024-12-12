@@ -273,3 +273,72 @@ class PerformanceAnalyzer:
             yearly_returns[str(year)] = yearly_return
 
         return yearly_returns
+
+    @staticmethod
+    def _calculate_market_metrics(trade_records: List[TradeRecord], initial_capital: float) -> Dict:
+        """计算市场指标"""
+        total_buy_value = sum(t.value for t in trade_records if t.action == "BUY")
+        total_sell_value = sum(t.value for t in trade_records if t.action == "SELL")
+        total_trade_value = total_buy_value + total_sell_value
+        
+        # 计算交易天数
+        trading_days = len(set(t.date.date() for t in trade_records))
+        
+        return {
+            "total_trade_value": total_trade_value,
+            "total_buy_value": total_buy_value,
+            "total_sell_value": total_sell_value,
+            "turnover_rate": (total_trade_value / initial_capital) * 100,
+            "avg_trade_value": total_trade_value / len(trade_records) if trade_records else 0,
+            "trade_frequency": len(trade_records) / trading_days if trading_days > 0 else 0,
+        }
+
+    @staticmethod
+    def _calculate_risk_metrics_extended(returns: np.ndarray, benchmark_returns: Optional[np.ndarray] = None) -> Dict:
+        """计算扩展的风险指标"""
+        if len(returns) < 2:
+            return {}
+        
+        # 计算波动率
+        volatility = np.std(returns) * np.sqrt(252)  # 年化波动率
+        
+        # 计算下行波动率（用于索提诺比率）
+        downside_returns = returns[returns < 0]
+        downside_volatility = np.std(downside_returns) * np.sqrt(252) if len(downside_returns) > 0 else 0
+        
+        # 计算无风险利率（假设为3%）
+        risk_free_rate = 0.03
+        
+        # 计算索提诺比率
+        excess_return = np.mean(returns) * 252 - risk_free_rate
+        sortino_ratio = excess_return / downside_volatility if downside_volatility != 0 else 0
+        
+        metrics = {
+            "volatility": volatility * 100,  # 转换为百分比
+            "sortino_ratio": sortino_ratio,
+            "max_loss": min(returns) * 100,  # 最大单日亏损
+        }
+        
+        # 如果有基准收益率，计算相对指标
+        if benchmark_returns is not None:
+            # 计算Beta
+            covariance = np.cov(returns, benchmark_returns)[0][1]
+            benchmark_variance = np.var(benchmark_returns)
+            beta = covariance / benchmark_variance if benchmark_variance != 0 else 0
+            
+            # 计算Alpha
+            benchmark_return = np.mean(benchmark_returns) * 252
+            portfolio_return = np.mean(returns) * 252
+            alpha = portfolio_return - (risk_free_rate + beta * (benchmark_return - risk_free_rate))
+            
+            # 计算信息比率
+            tracking_error = np.std(returns - benchmark_returns) * np.sqrt(252)
+            information_ratio = (portfolio_return - benchmark_return) / tracking_error if tracking_error != 0 else 0
+            
+            metrics.update({
+                "beta": beta,
+                "alpha": alpha * 100,  # 转换为百分比
+                "information_ratio": information_ratio,
+            })
+        
+        return metrics
