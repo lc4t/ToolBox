@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import QuantTradeReport from '../components/QuantTradeReport';
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { buildTime } from '../utils/buildInfo';
 
 // 定义交易数据类型
 interface TradeData {
@@ -219,7 +220,19 @@ export default function Home() {
     <main className="min-h-screen bg-background p-4">
       <Card className="mb-4">
         <CardHeader>
-          <CardTitle>选择交易标的</CardTitle>
+          <div className="flex justify-between items-center">
+            <CardTitle>选择交易标的</CardTitle>
+            <div className="text-sm text-muted-foreground bg-muted px-3 py-1 rounded-md">
+              构建时间: {new Date(buildTime).toLocaleString('zh-CN', {
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit',
+                hour: '2-digit',
+                minute: '2-digit',
+                hour12: false
+              })}
+            </div>
+          </div>
         </CardHeader>
         <CardContent className="flex flex-wrap gap-2">
           {tradeData.map((data, index) => (
@@ -235,22 +248,7 @@ export default function Home() {
       </Card>
       
       <QuantTradeReport 
-        symbol={currentData.symbol}
-        name={currentData.name}
-        reportDate={currentData.reportDate}
-        dateRange={currentData.dateRange}
-        latestSignal={currentData.latestSignal}
-        positionInfo={currentData.positionInfo}
-        annualReturns={currentData.annualReturns || []}
-        returnMetrics={currentData.returnMetrics || []}
-        riskMetrics={currentData.riskMetrics || []}
-        riskAdjustedMetrics={currentData.riskAdjustedMetrics || []}
-        tradingMetrics={currentData.tradingMetrics || []}
-        positionMetrics={currentData.positionMetrics || []}
-        benchmarkMetrics={currentData.benchmarkMetrics || []}
-        timeMetrics={currentData.timeMetrics || []}
-        recentTrades={currentData.recentTrades || []}
-        strategyParameters={currentData.strategyParameters || []}
+        {...currentData}
         showStrategyParameters={currentData.showStrategyParameters || false}
       />
     </main>
