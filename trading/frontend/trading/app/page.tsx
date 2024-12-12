@@ -38,17 +38,37 @@ interface TradeData {
     year: number;
     value: number;
   }>;
-  performanceMetrics: Array<{
+  returnMetrics: Array<{
     name: string;
-    value: number;
+    value: number | string;
     description: string;
   }>;
   riskMetrics: Array<{
     name: string;
-    value: number;
+    value: number | string;
     description: string;
   }>;
-  marketIndicators: Array<{
+  riskAdjustedMetrics: Array<{
+    name: string;
+    value: number | string;
+    description: string;
+  }>;
+  tradingMetrics: Array<{
+    name: string;
+    value: number | string;
+    description: string;
+  }>;
+  positionMetrics: Array<{
+    name: string;
+    value: number | string;
+    description: string;
+  }>;
+  benchmarkMetrics: Array<{
+    name: string;
+    value: number | string;
+    description: string;
+  }>;
+  timeMetrics: Array<{
     name: string;
     value: number | string;
     description: string;
@@ -126,12 +146,18 @@ const normalizeData = (data: RawTradeData): TradeData => {
   
   return {
     ...data,
+    returnMetrics: data.returnMetrics || [],
+    riskMetrics: data.riskMetrics || [],
+    riskAdjustedMetrics: data.riskAdjustedMetrics || [],
+    tradingMetrics: data.tradingMetrics || [],
+    positionMetrics: data.positionMetrics || [],
+    benchmarkMetrics: data.benchmarkMetrics || [],
+    timeMetrics: data.timeMetrics || [],
     latestSignal: {
       ...latestSignal,
-      // 确保必需字段有默认值
       action: normalizeAction(latestSignal.action || ''),
-      asset: latestSignal.asset || data.symbol || 'Unknown',  // 使用 symbol 作为后备
-      timestamp: latestSignal.timestamp || new Date().toISOString(),  // 使用当前时间作为后备
+      asset: latestSignal.asset || data.symbol || 'Unknown',
+      timestamp: latestSignal.timestamp || new Date().toISOString(),
       prices: latestSignal.prices,
       price: latestSignal.price
     }
@@ -153,6 +179,9 @@ export default function Home() {
           throw new Error('Failed to fetch data');
         }
         const data = (await response.json()) as RawTradeData[];
+        if (!data || !Array.isArray(data) || data.length === 0) {
+          throw new Error('No data available');
+        }
         setTradeData(data.map(normalizeData));
       } catch (error) {
         console.error('Error loading trade data:', error);
@@ -165,15 +194,24 @@ export default function Home() {
     loadTradeData();
   }, []);
 
+  // 创建一个安全的获取当前数据的函数
+  const getCurrentTradeData = (): TradeData | null => {
+    if (!tradeData || !Array.isArray(tradeData) || tradeData.length === 0) {
+      return null;
+    }
+    return tradeData[selectedIndex] || null;
+  };
+
   if (isLoading) {
     return <div className="flex justify-center items-center min-h-screen">Loading...</div>;
   }
 
   if (error) {
-    return <div className="flex justify-center items-center min-h-screen text-red-500">{error}</div>;
+    return <div className="flex justify-center items-center min-h-screen text-red-600">{error}</div>;
   }
 
-  if (tradeData.length === 0) {
+  const currentData = getCurrentTradeData();
+  if (!currentData) {
     return <div className="flex justify-center items-center min-h-screen">No data available</div>;
   }
 
@@ -190,12 +228,31 @@ export default function Home() {
               onClick={() => setSelectedIndex(index)}
               variant={selectedIndex === index ? "default" : "outline"}
             >
-              {data.name}（{data.latestSignal.action}）
+              {data.name}（{data.latestSignal?.action || '观察'}）
             </Button>
           ))}
         </CardContent>
       </Card>
-      <QuantTradeReport {...tradeData[selectedIndex]} />
+      
+      <QuantTradeReport 
+        symbol={currentData.symbol}
+        name={currentData.name}
+        reportDate={currentData.reportDate}
+        dateRange={currentData.dateRange}
+        latestSignal={currentData.latestSignal}
+        positionInfo={currentData.positionInfo}
+        annualReturns={currentData.annualReturns || []}
+        returnMetrics={currentData.returnMetrics || []}
+        riskMetrics={currentData.riskMetrics || []}
+        riskAdjustedMetrics={currentData.riskAdjustedMetrics || []}
+        tradingMetrics={currentData.tradingMetrics || []}
+        positionMetrics={currentData.positionMetrics || []}
+        benchmarkMetrics={currentData.benchmarkMetrics || []}
+        timeMetrics={currentData.timeMetrics || []}
+        recentTrades={currentData.recentTrades || []}
+        strategyParameters={currentData.strategyParameters || []}
+        showStrategyParameters={currentData.showStrategyParameters || false}
+      />
     </main>
   );
 }

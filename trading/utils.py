@@ -337,14 +337,7 @@ def get_stock_name(db_client: DBClient, symbol: str) -> str:
         logger.error(f"Error getting stock name: {e}")
     return symbol  # 如果获取失败，返回股票代码作为名称 
 
-def format_for_json(
-    metrics: dict,
-    trades: list,
-    next_signal: dict,
-    params: dict,
-    symbol: str,
-    stock_name: str,
-) -> dict:
+def format_for_json(metrics: dict, trades: list, next_signal: dict, params: dict, symbol: str, stock_name: str) -> dict:
     """格式化回测结果为JSON格式"""
     # 从数据库获取最新价格
     db_client = DBClient()
@@ -389,270 +382,165 @@ def format_for_json(
             for year, value in metrics.get("yearly_returns", {}).items()
         ],
         
-        # 性能指标分组
-        "performanceMetrics": [
-            {
-                "name": "最新净值",
-                "value": round(metrics["latest_nav"], 3),
-                "description": "当前投资组合价值相对于初始资金的比值，反映总体收益情况"
-            },
-            {
-                "name": "年化收益率",
-                "value": round(metrics["annual_return"], 2),
-                "description": "将总收益按年度平均计算的收益率，用于评估策略的整体盈利能力"
-            },
-            {
-                "name": "复合年化收益",
-                "value": round(metrics["cagr"], 2),
-                "description": "考虑收益再投资的年化收益率，更准确地反映长期投资回报"
-            },
-            {
-                "name": "总交易次数",
-                "value": metrics["total_trades"],
-                "description": "策略产生的买入和卖出操作总次数，反映交易频率"
-            },
-            {
-                "name": "胜率",
-                "value": round(metrics["win_rate"], 2),
-                "description": "盈利交易占总交易的比例，反映策略的准确性和稳定性"
-            },
-            {
-                "name": "盈亏比",
-                "value": round(metrics["profit_factor"], 2),
-                "description": "总盈利除以总亏损的比值，大于1表示策略整体盈利，越大越好"
-            },
-            {
-                "name": "盈利交易",
-                "value": metrics["won_trades"],
-                "description": "产生盈利的交易次数"
-            },
-            {
-                "name": "亏损交易",
-                "value": metrics["lost_trades"],
-                "description": "产生亏损的交易次数"
-            },
-            {
-                "name": "总盈亏",
-                "value": round(metrics["total_pnl"], 2),
-                "description": "所有交易产生的盈亏总和，包括已实现和未实现盈亏"
-            },
-            {
-                "name": "平均盈利",
-                "value": round(metrics["avg_won"], 2),
-                "description": "单次盈利交易的平均盈利金额"
-            },
-            {
-                "name": "平均亏损",
-                "value": round(metrics["avg_lost"], 2),
-                "description": "单次亏损交易的平均亏损金额"
-            },
-            {
-                "name": "持仓比例",
-                "value": round(metrics["holding_ratio"], 2),
-                "description": "持仓时间占总交易时间的百分比，反映资金利用率"
-            },
-            {
-                "name": "平均持仓",
-                "value": f"{metrics['avg_holding_period']}天",
-                "description": "每笔交易的平均持有时间，反映策略的交易周期"
-            },
-            {
-                "name": "最大连胜",
-                "value": metrics["max_consecutive_wins"],
-                "description": "最大连续盈利的交易次数，反映策略的稳定性"
-            },
-            {
-                "name": "最大连亏",
-                "value": metrics["max_consecutive_losses"],
-                "description": "最大连续亏损的交易次数，反映策略的风险控制能力"
-            }
+        # 1. 收益指标 - 反映策略的盈利能力
+        "returnMetrics": [
+            {"name": "最新净值", "value": round(metrics["latest_nav"], 3),
+             "description": "当前投资组合价值相对于初始资金的比值，反映总体收益情况"},
+            {"name": "年化收益率", "value": round(metrics["annual_return"], 2),
+             "description": "将总收益按年度平均计算的收益率，用于评估策略的整体盈利能力"},
+            {"name": "复合年化收益", "value": round(metrics["cagr"], 2),
+             "description": "考虑收益再投资的年化收益率，更准确地反映长期投资回报"},
+            {"name": "Alpha", "value": round(metrics.get("alpha", 0), 2),
+             "description": "策略相对于市场基准的超额收益，反映策略的选股择时能力"},
+            {"name": "总盈亏", "value": round(metrics["total_pnl"], 2),
+             "description": "所有交易产生的盈亏总和，包括已实现和未实现盈亏"},
         ],
         
-        # 风险指标分组
+        # 2. 风险指标 - 反映策略的风险水平
         "riskMetrics": [
-            {
-                "name": "夏普比率",
-                "value": round(metrics["sharpe_ratio"], 2),
-                "description": "超额收益与波动率的比值，大于1表示较好，大于2表示优秀，是衡量风险调整后收益的重要指标"
-            },
-            {
-                "name": "最大回撤",
-                "value": round(metrics["max_drawdown"], 2),
-                "description": "任意时间段内净值的最大跌幅，反映策略最大可能损失，越小越好"
-            },
-            {
-                "name": "当前回撤",
-                "value": round(metrics["current_drawdown"], 2),
-                "description": "当前净值距离历史最高点的跌幅，反映当前的风险状况"
-            },
-            {
-                "name": "Calmar比率",
-                "value": round(metrics["calmar_ratio"], 2),
-                "description": "年化收益率除以最大回撤，反映单位风险下的收益能力。大于1表示较好，大于3表示优秀"
-            },
-            {
-                "name": "索提诺比率",
-                "value": round(metrics["sortino_ratio"], 2),
-                "description": "类似夏普比率，但只考虑下行波动率，更关注亏损风险。大于2表示较好"
-            },
-            {
-                "name": "波动率",
-                "value": round(metrics["volatility"], 2),
-                "description": "收益率的标准差，反映策略的波动性和风险大小，越小越稳定"
-            },
-            {
-                "name": "最大亏损",
-                "value": round(metrics["max_loss"], 2),
-                "description": "单笔交易中的最大亏损金额，反映策略的风险控制能力"
-            },
-            {
-                "name": "Beta系数",
-                "value": round(metrics.get("beta", 0), 2),
-                "description": "策略收益相对于市场基准的敏感度，=1表示与市场同步，<1表示波动小于市场"
-            },
-            {
-                "name": "Alpha",
-                "value": round(metrics.get("alpha", 0), 2),
-                "description": "策略相对于市场基准的超额收益，反映策略的选股择时能力"
-            }
+            {"name": "最大回撤", "value": round(metrics["max_drawdown"], 2),
+             "description": "任意时间段内净值的最大跌幅，反映策略最大可能损失，越小越好"},
+            {"name": "当前回撤", "value": round(metrics["current_drawdown"], 2),
+             "description": "当前净值距离历史最高点的跌幅，反映当前的风险状况"},
+            {"name": "波动率", "value": round(metrics["volatility"], 2),
+             "description": "收益率的标准差，反映策略的波动性和风险大小，越小越稳定"},
+            {"name": "最大亏损", "value": round(metrics["max_loss"], 2),
+             "description": "单笔交易中的最大亏损金额，反映策略的风险控制能力"},
+            {"name": "Beta系数", "value": round(metrics.get("beta", 0), 2),
+             "description": "策略收益相对于市场基准的敏感度，=1表示与市场同步，<1表示波动小于市场"},
         ],
         
-        # 市场指标分组
-        "marketIndicators": [
-            {
-                "name": "运行天数",
-                "value": metrics["running_days"],
-                "description": "策略回测的总天数，反映样本期长度"
-            },
-            {
-                "name": "开始日期",
-                "value": metrics["start_date"].strftime("%Y-%m-%d"),
-                "description": "回测起始的交易日期"
-            },
-            {
-                "name": "结束日期",
-                "value": metrics["end_date"].strftime("%Y-%m-%d"),
-                "description": "回测结束的交易日期"
-            },
-            {
-                "name": "VWR",
-                "value": round(metrics["vwr"], 2),
-                "description": "波动率加权收益率，综合考虑收益和波动性，通常大于5表示较好"
-            },
-            {
-                "name": "SQN",
-                "value": round(metrics["sqn"], 2),
-                "description": "系统质量指数，反映策略的稳定性和可靠性，大于2表示较好，大于4表示优秀"
-            },
-            {
-                "name": "Beta参考",
-                "value": metrics.get("benchmark_symbol", "N/A"),
-                "description": "用于计算Beta和Alpha的市场基准指数"
-            },
-            {
-                "name": "Beta状态",
-                "value": metrics.get("beta_status", "N/A"),
-                "description": "Beta系数的计算状态，说明计算是否成功及原因"
-            }
+        # 3. 风险调整收益指标 - 综合考虑收益和风险
+        "riskAdjustedMetrics": [
+            {"name": "夏普比率", "value": round(metrics["sharpe_ratio"], 2),
+             "description": "超额收益与波动率的比值，大于1表示较好，大于2表示优秀，是衡量风险调整后收益的重要指标"},
+            {"name": "索提诺比率", "value": round(metrics["sortino_ratio"], 2),
+             "description": "类似夏普比率，但只考虑下行波动率，更关注亏损风险。大于2表示较好"},
+            {"name": "Calmar比率", "value": round(metrics["calmar_ratio"], 2),
+             "description": "年化收益率除以最大回撤，反映单位风险下的收益能力。大于1表示较好，大于3表示优秀"},
+            {"name": "VWR", "value": round(metrics["vwr"], 2),
+             "description": "波动率加权收益率，综合考虑收益和波动性，通常大于5表示较好"},
+            {"name": "SQN", "value": round(metrics["sqn"], 2),
+             "description": "系统质量指数，反映策略的稳定性和可靠性，大于2表示较好，大于4表示优秀"},
         ],
         
-        # 最近交易记录
-        "recentTrades": [
-            {
-                "date": trade["date"],
-                "action": trade["action"],
-                "price": round(trade["price"], 3),
-                "quantity": trade["size"],
-                "value": round(trade["value"], 3),
-                "profitLoss": round(trade["pnl"], 3),
-                "totalValue": round(trade["total_value"], 3),
-                "reason": trade["signal_reason"]
-            }
-            for trade in trades[-30:]  # 保留最近30条记录
+        # 4. 交易统计指标 - 反映策略的交易特征
+        "tradingMetrics": [
+            {"name": "总交易次数", "value": metrics["total_trades"],
+             "description": "策略产生的买入和卖出操作总次数，反映交易频率"},
+            {"name": "胜率", "value": round(metrics["win_rate"], 2),
+             "description": "盈利交易占总交易的比例，反映策略的准确性和稳定性"},
+            {"name": "盈亏比", "value": round(metrics["profit_factor"], 2),
+             "description": "总盈利除以总亏损的比值，大于1表示策略整体盈利，越大越好"},
+            {"name": "平均盈利", "value": round(metrics["avg_won"], 2),
+             "description": "单次盈利交易的平均盈利金额"},
+            {"name": "平均亏损", "value": round(metrics["avg_lost"], 2),
+             "description": "单次亏损交易的平均亏损金额"},
+            {"name": "盈利交易", "value": metrics["won_trades"],
+             "description": "产生盈利的交易次数"},
+            {"name": "亏损交易", "value": metrics["lost_trades"],
+             "description": "产生亏损的交易次数"},
+            {"name": "最大连胜", "value": metrics["max_consecutive_wins"],
+             "description": "最大连续盈利的交易次数，反映策略的稳定性"},
+            {"name": "最大连亏", "value": metrics["max_consecutive_losses"],
+             "description": "最大连续亏损的交易次数，反映策略的风险控制能力"},
+        ],
+        
+        # 5. 持仓特征指标 - 反映策略的持仓特点
+        "positionMetrics": [
+            {"name": "持仓比例", "value": round(metrics["holding_ratio"], 2),
+             "description": "持仓时间占总交易时间的百分比，反映资金利用率"},
+            {"name": "平均持仓", "value": f"{metrics['avg_holding_period']}天",
+             "description": "每笔交易的平均持有时间，反映策略的交易周期"},
+        ],
+        
+        # 6. 基准对比指标 - 用于市场对比分析
+        "benchmarkMetrics": [
+            {"name": "Beta参考", "value": metrics.get("benchmark_symbol", "N/A"),
+             "description": "用于计算Beta和Alpha的市场基准指数"},
+            {"name": "Beta状态", "value": metrics.get("beta_status", "N/A"),
+             "description": "Beta系数的计算状态，说明计算是否成功及原因"},
+        ],
+        
+        # 7. 时间统计指标 - 反映策略的时间维度
+        "timeMetrics": [
+            {"name": "运行天数", "value": metrics["running_days"],
+             "description": "策略回测的总天数，反映样本期长度"},
+            {"name": "开始日期", "value": metrics["start_date"].strftime("%Y-%m-%d"),
+             "description": "回测起始的交易日期"},
+            {"name": "结束日期", "value": metrics["end_date"].strftime("%Y-%m-%d"),
+             "description": "回测结束的交易日期"},
         ],
         
         "strategyParameters": None,
         "showStrategyParameters": False
     }
     
-    # 性能指标分组
-    performance_metrics = [
-        {"name": "最新净值", "value": round(metrics["latest_nav"], 3), 
-         "description": "当前投资组合价值相对于初始资金的比值，反映总体收益情况"},
-        {"name": "年化收益率", "value": round(metrics["annual_return"], 2), 
-         "description": "将总收益按年度平均计算的收益率，用于评估策略的整体盈利能力"},
-        {"name": "复合年化收益", "value": round(metrics["cagr"], 2), 
-         "description": "考虑收益再投资的年化收益率，更准确地反映长期投资回报"},
-        {"name": "总交易次数", "value": metrics["total_trades"], 
-         "description": "策略产生的买入和卖出操作总次数，反映交易频率"},
-        {"name": "胜率", "value": round(metrics["win_rate"], 2), 
-         "description": "盈利交易占总交易的比例，反映策略的准确性和稳定性"},
-        {"name": "盈亏比", "value": round(metrics["profit_factor"], 2), 
-         "description": "总盈利除以总亏损的比值，大于1表示策略整体盈利，越大越好"},
-        {"name": "盈利交易", "value": metrics["won_trades"], 
-         "description": "产生盈利的交易次数"},
-        {"name": "亏损交易", "value": metrics["lost_trades"], 
-         "description": "产生亏损的交易次数"},
-        {"name": "总盈亏", "value": round(metrics["total_pnl"], 2), 
-         "description": "所有交易产生的盈亏总和，包括已实现和未实现盈亏"},
-        {"name": "平均盈利", "value": round(metrics["avg_won"], 2), 
-         "description": "单次盈利交易的平均盈利金额"},
-        {"name": "平均亏损", "value": round(metrics["avg_lost"], 2), 
-         "description": "单次亏损交易的平均亏损金额"},
-        {"name": "持仓比例", "value": round(metrics["holding_ratio"], 2), 
-         "description": "持仓时间占总交易时间的百分比，反映资金利用率"},
-        {"name": "平均持仓", "value": f"{metrics['avg_holding_period']}天", 
-         "description": "每笔交易的平均持有时间，反映策略的交易周期"},
-        {"name": "最大连胜", "value": metrics["max_consecutive_wins"], 
-         "description": "最大连续盈利的交易次数，反映策略的稳定性"},
-        {"name": "最大连亏", "value": metrics["max_consecutive_losses"], 
-         "description": "最大连续亏损的交易次数，反映策略的风险控制能力"},
-    ]
+    # 格式化交易记录
+    formatted_trades = []
+    buy_queue = []  # 用于追踪买入记录的FIFO队列
 
-    # 风险指标分组
-    risk_metrics = [
-        {"name": "夏普比率", "value": round(metrics["sharpe_ratio"], 2), 
-         "description": "超额收益与波动率的比值，大于1表示较好，大于2表示优秀，是衡量风险调整后收益的重要指标"},
-        {"name": "最大回撤", "value": round(metrics["max_drawdown"], 2), 
-         "description": "任意时间段内净值的最大跌幅，反映策略最大可能损失，越小越好"},
-        {"name": "当前回撤", "value": round(metrics["current_drawdown"], 2), 
-         "description": "当前净值距离历史最高点的跌幅，反映当前的风险状况"},
-        {"name": "Calmar比率", "value": round(metrics["calmar_ratio"], 2), 
-         "description": "年化收益率除以最大回撤，反映单位风险下的收益能力。大于1表示较好，大于3表示优秀"},
-        {"name": "索提诺比率", "value": round(metrics["sortino_ratio"], 2), 
-         "description": "类似夏普比率，但只考虑下行波动率，更关注亏损风险。大于2表示较好"},
-        {"name": "波动率", "value": round(metrics["volatility"], 2), 
-         "description": "收益率的标准差，反映策略的波动性和风险大小，越小越稳定"},
-        {"name": "最大亏损", "value": round(metrics["max_loss"], 2), 
-         "description": "单笔交易中的最大亏损金额，反映策略的风险控制能力"},
-        {"name": "Beta系数", "value": round(metrics.get("beta", 0), 2), 
-         "description": "策略收益相对于市场基准的敏感度，=1表示与市场同步，<1表示波动小于市场"},
-        {"name": "Alpha", "value": round(metrics.get("alpha", 0), 2), 
-         "description": "策略相对于市场基准的超额收益，反映策略的选股择时能力"},
-    ]
+    for trade in trades:
+        # 检查日期格式，如果已经是字符串就直接使用
+        trade_date = trade["date"]
+        if isinstance(trade_date, (datetime, date)):
+            trade_date = trade_date.strftime("%Y-%m-%d")
 
-    # 市场指标分组
-    market_metrics = [
-        {"name": "运行天数", "value": metrics["running_days"], 
-         "description": "策略回测的总天数，反映样本期长度"},
-        {"name": "开始日期", "value": metrics["start_date"].strftime("%Y-%m-%d"), 
-         "description": "回测起始的交易日期"},
-        {"name": "结束日期", "value": metrics["end_date"].strftime("%Y-%m-%d"), 
-         "description": "回测结束的交易日期"},
-        {"name": "VWR", "value": round(metrics["vwr"], 2), 
-         "description": "波动率加权收益率，综合考虑收益和波动性，通常大于5表示较好"},
-        {"name": "SQN", "value": round(metrics["sqn"], 2), 
-         "description": "系统质量指数，反映策略的稳定性和可靠性，大于2表示较好，大于4表示优秀"},
-        {"name": "Beta参考", "value": metrics.get("benchmark_symbol", "N/A"), 
-         "description": "用于计算Beta和Alpha的市场基准指数"},
-        {"name": "Beta状态", "value": metrics.get("beta_status", "N/A"), 
-         "description": "Beta系数的计算状态，说明计算是否成功及原因"},
-    ]
+        # 计算盈亏百分比（仅针对卖出交易）
+        pnl_percentage = None
+        entry_price = None
+
+        if trade["action"] == "BUY":
+            # 记录买入信息
+            buy_queue.append({
+                "price": trade["price"],
+                "size": trade["size"],
+                "remaining": trade["size"]  # 用于追踪剩余数量
+            })
+        elif trade["action"] == "SELL" and buy_queue:
+            # 计算加权平均买入价格
+            total_size = trade["size"]
+            total_cost = 0
+            size_left = total_size
+            
+            # 从最早的买入记录开始匹配
+            for buy in buy_queue:
+                if buy["remaining"] > 0:
+                    matched_size = min(size_left, buy["remaining"])
+                    total_cost += matched_size * buy["price"]
+                    size_left -= matched_size
+                    buy["remaining"] -= matched_size
+                    
+                    if size_left == 0:
+                        break
+
+            # 如果所有数量都匹配上了
+            if size_left == 0:
+                entry_price = total_cost / total_size
+                pnl_percentage = ((trade["price"] - entry_price) / entry_price) * 100
+
+            # 清理已用完的买入记录
+            buy_queue = [buy for buy in buy_queue if buy["remaining"] > 0]
+
+        formatted_trade = {
+            "date": trade_date,
+            "action": trade["action"],
+            "price": round(trade["price"], 3),
+            "quantity": trade["size"],
+            "value": round(trade["value"], 2),
+            "profitLoss": round(trade.get("pnl", 0), 2),
+            "profitLossPercentage": round(pnl_percentage, 2) if pnl_percentage is not None else None,
+            "totalValue": round(trade["total_value"], 2),
+            "reason": trade.get("signal_reason", ""),
+            "entryPrice": round(entry_price, 3) if entry_price is not None else None,
+        }
+        
+        # 调试输出
+
+        formatted_trades.append(formatted_trade)
 
     result.update({
-        "performanceMetrics": performance_metrics,
-        "riskMetrics": risk_metrics,
-        "marketIndicators": market_metrics,
+        "recentTrades": formatted_trades,
     })
 
     return result
