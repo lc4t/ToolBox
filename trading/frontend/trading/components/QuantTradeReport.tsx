@@ -20,12 +20,18 @@ interface TradeSignal {
 }
 
 interface PositionInfo {
-  entryDate: string;
-  entryPrice: number;
-  quantity: number;
-  currentValue: number;
-  profitLoss: number;
-  profitLossPercentage: number;
+  entryDate?: string;
+  entry_date?: string;
+  entryPrice?: number;
+  entry_price?: number;
+  quantity?: number;
+  position_size?: number;
+  currentValue?: number;
+  current_value?: number;
+  profitLoss?: number;
+  unrealized_pnl?: number;
+  profitLossPercentage?: number;
+  unrealized_pnl_pct?: number;
 }
 
 interface Metric {
@@ -103,7 +109,7 @@ export default function QuantTradeReport({
         <CardContent>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-4">
             <LatestSignalSection signal={latestSignal} symbol={symbol} />
-            <PositionInfoSection info={positionInfo} />
+            <PositionInfoSection info={positionInfo} symbol={symbol} />
           </div>
         </CardContent>
       </Card>
@@ -148,8 +154,8 @@ function LatestSignalSection({ signal, symbol }: { signal: TradeSignal, symbol: 
               signal.action === '买入'
                 ? 'default'
                 : signal.action === '卖出'
-                ? 'destructive'
-                : 'secondary'
+                  ? 'destructive'
+                  : 'secondary'
             }
           >
             {signal.action}
@@ -196,8 +202,27 @@ function LatestSignalSection({ signal, symbol }: { signal: TradeSignal, symbol: 
   );
 }
 
-function PositionInfoSection({ info }: { info: PositionInfo | null }) {
-  if (!info) return null;
+function PositionInfoSection({ info, symbol }: { info: PositionInfo | null, symbol: string }) {
+  if (!info) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>当前持仓</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="text-muted-foreground">暂无持仓</p>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  // 确保所有需要的字段都存在并格式化
+  const entryDate = info.entryDate || info.entry_date || '';
+  const entryPrice = info.entryPrice || info.entry_price || 0;
+  const quantity = info.quantity || info.position_size || 0;
+  const currentValue = info.currentValue || info.current_value || 0;
+  const profitLoss = info.profitLoss || info.unrealized_pnl || 0;
+  const profitLossPercentage = info.profitLossPercentage || info.unrealized_pnl_pct || 0;
 
   return (
     <Card>
@@ -208,30 +233,30 @@ function PositionInfoSection({ info }: { info: PositionInfo | null }) {
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
           <div>
             <p className="text-sm text-muted-foreground">买入日期:</p>
-            <p className="text-lg font-semibold">{formatDate(info.entryDate)}</p>
+            <p className="text-lg font-semibold">{entryDate ? formatDate(entryDate) : '暂无'}</p>
           </div>
           <div>
             <p className="text-sm text-muted-foreground">买入价格:</p>
-            <p className="text-lg font-semibold">¥{info.entryPrice.toFixed(3)}</p>
+            <p className="text-lg font-semibold">{formatMoney(entryPrice, symbol)}</p>
           </div>
           <div>
-            <p className="text-sm text-muted-foreground">持仓成本:</p>
-            <p className="text-lg font-semibold">{info.quantity.toLocaleString()}</p>
+            <p className="text-sm text-muted-foreground">持仓数量:</p>
+            <p className="text-lg font-semibold">{quantity.toLocaleString()}</p>
           </div>
           <div>
             <p className="text-sm text-muted-foreground">当前价值:</p>
-            <p className="text-lg font-semibold">¥{info.currentValue.toFixed(2)}</p>
+            <p className="text-lg font-semibold">{formatMoney(currentValue, symbol)}</p>
           </div>
           <div>
             <p className="text-sm text-muted-foreground">浮动盈亏:</p>
-            <p className={`text-lg font-semibold ${info.profitLoss >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-              ¥{info.profitLoss.toFixed(2)}
+            <p className={`text-lg font-semibold ${profitLoss >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+              {formatMoney(profitLoss, symbol)}
             </p>
           </div>
           <div>
             <p className="text-sm text-muted-foreground">收益率:</p>
-            <p className={`text-lg font-semibold ${info.profitLossPercentage >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-              {info.profitLossPercentage >= 0 ? '+' : ''}{info.profitLossPercentage.toFixed(2)}%
+            <p className={`text-lg font-semibold ${profitLossPercentage >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+              {profitLossPercentage >= 0 ? '+' : ''}{profitLossPercentage.toFixed(2)}%
             </p>
           </div>
         </div>
@@ -286,29 +311,29 @@ function AnnualReturnsSection({ returns }: { returns: { year: number; value: num
 function MetricsSection({ title, metrics, symbol }: { title: string; metrics: Metric[]; symbol: string }) {
   const formatValue = (metric: Metric) => {
     const value = metric.value;
-    
+
     if (typeof value === 'string' && value.includes('天')) {
       return value;
     }
 
     const percentageMetrics = [
-      '年化收益率', '复合年化收益', 'Alpha', '最大回撤', '当前回撤', 
+      '年化收益率', '复合年化收益', 'Alpha', '最大回撤', '当前回撤',
       '波动率', '胜率', '持仓比例'
     ];
-    
+
     const moneyMetrics = [
       '总盈亏', '平均盈利', '平均亏损', '最大亏损'
     ];
-    
+
     const ratioMetrics = [
       '最新净值', '夏普比率', '索提诺比率', 'Calmar比率', 'VWR', 'SQN',
       'Beta系数', '盈亏比'
     ];
-    
+
     const countMetrics = [
       '总交易次数', '盈利交易', '亏损交易', '最大连胜', '最大连亏'
     ];
-    
+
     const dayMetrics = [
       '运行天数', '平均持仓'
     ];
@@ -326,7 +351,7 @@ function MetricsSection({ title, metrics, symbol }: { title: string; metrics: Me
         return `${value}天`;
       }
     }
-    
+
     return value;
   };
 
@@ -342,7 +367,7 @@ function MetricsSection({ title, metrics, symbol }: { title: string; metrics: Me
               <div className="flex justify-between items-center">
                 <span className="font-medium">{metric.name}</span>
                 <span className={
-                  typeof metric.value === 'number' 
+                  typeof metric.value === 'number'
                     ? metric.value > 0 ? 'text-green-600' : metric.value < 0 ? 'text-red-600' : ''
                     : ''
                 }>
@@ -377,26 +402,26 @@ function RecentTradesSection({ trades, symbol }: { trades: Trade[]; symbol: stri
 
   const sortedTrades = [...trades].sort((a, b) => {
     const multiplier = sortConfig.direction === 'asc' ? 1 : -1;
-    
+
     if (sortConfig.key === 'date') {
       return multiplier * (new Date(a.date).getTime() - new Date(b.date).getTime());
     }
-    
+
     const aValue = a[sortConfig.key];
     const bValue = b[sortConfig.key];
-    
+
     if (aValue == null && bValue == null) return 0;
     if (aValue == null) return 1;
     if (bValue == null) return -1;
-    
+
     if (typeof aValue === 'number' && typeof bValue === 'number') {
       return multiplier * (aValue - bValue);
     }
-    
+
     if (typeof aValue === 'string' && typeof bValue === 'string') {
       return multiplier * aValue.localeCompare(bValue);
     }
-    
+
     return 0;
   });
 
@@ -411,12 +436,12 @@ function RecentTradesSection({ trades, symbol }: { trades: Trade[]; symbol: stri
 
   const formatProfitLoss = (trade: Trade) => {
     if (trade.action !== 'SELL') return '—';
-    
+
     const pnlText = formatMoney(trade.profitLoss, symbol);
     const pnlPercentage = trade.profitLossPercentage;
-    
+
     const className = trade.profitLoss >= 0 ? 'text-green-600' : 'text-red-600';
-    
+
     return (
       <div className={className}>
         {pnlText}

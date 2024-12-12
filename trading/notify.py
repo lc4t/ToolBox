@@ -10,10 +10,10 @@ from typing import Dict, List, Optional, Any
 from db import DBClient
 import requests
 import time
+
 # 加载环境变量配置
 from dotenv import load_dotenv
-from jinja2 import (Environment, FileSystemLoader, PackageLoader,
-                    select_autoescape)
+from jinja2 import Environment, FileSystemLoader, PackageLoader, select_autoescape
 from loguru import logger
 
 load_dotenv()
@@ -94,9 +94,9 @@ class WecomNotifyTemplate(NotifyTemplate):
         message += "\n## 最近交易记录（最多显示5条）\n"
         for trade in result.trades[-5:]:
             trade_date = (
-                trade['date'].strftime('%Y-%m-%d') 
-                if isinstance(trade['date'], datetime) 
-                else trade['date']
+                trade["date"].strftime("%Y-%m-%d")
+                if isinstance(trade["date"], datetime)
+                else trade["date"]
             )
             message += (
                 f"- {trade_date} {trade['action']} "
@@ -132,46 +132,56 @@ class EmailNotifier:
 
     def send(self, to_addrs: List[str], subject: str, content: str) -> bool:
         """发送邮件，带重试机制"""
+        success = False  # 添加成功标志
         for attempt in range(self.max_retries):
             try:
                 # 创建SMTP连接
                 with smtplib.SMTP_SSL(self.smtp_server, self.smtp_port) as server:
                     # 登录
                     server.login(self.username, self.password)
-                    
+
                     # 创建邮件
-                    msg = MIMEMultipart()
-                    msg['From'] = self.username
-                    msg['To'] = ', '.join(to_addrs)
-                    msg['Subject'] = subject
-                    
-                    # 添加正文
-                    msg.attach(MIMEText(content, 'plain', 'utf-8'))
-                    
+                    msg = MIMEMultipart("alternative")  # 修改这里，使用 alternative
+                    msg["From"] = self.username
+                    msg["To"] = ", ".join(to_addrs)
+                    msg["Subject"] = subject
+
+                    # 添加 HTML 内容
+                    msg.attach(
+                        MIMEText(content, "html", "utf-8")
+                    )  # 修改这里，指定为 html
+
                     # 发送邮件
                     server.send_message(msg)
-                    
+
+                    success = True  # 标记发送成功
                     logger.info(f"Successfully sent email to {to_addrs}")
-                    return True
-                    
+                    break  # 发送成功后跳出重试循环
+
             except smtplib.SMTPServerDisconnected as e:
-                logger.warning(f"SMTP Server disconnected (attempt {attempt + 1}/{self.max_retries}): {e}")
+                logger.warning(
+                    f"SMTP Server disconnected (attempt {attempt + 1}/{self.max_retries}): {e}"
+                )
                 if attempt < self.max_retries - 1:
                     time.sleep(self.retry_delay)
                 continue
-                
+
             except smtplib.SMTPException as e:
-                logger.error(f"SMTP error (attempt {attempt + 1}/{self.max_retries}): {e}")
+                logger.error(
+                    f"SMTP error (attempt {attempt + 1}/{self.max_retries}): {e}"
+                )
                 if attempt < self.max_retries - 1:
                     time.sleep(self.retry_delay)
                 continue
-                
+
             except Exception as e:
                 logger.error(f"Unexpected error while sending email: {e}")
                 return False
-                
-        logger.error(f"Failed to send email after {self.max_retries} attempts")
-        return False
+
+        if not success:
+            logger.error(f"Failed to send email after {self.max_retries} attempts")
+
+        return success
 
 
 class EmailNotifyTemplate(NotifyTemplate):
@@ -205,12 +215,14 @@ class EmailNotifyTemplate(NotifyTemplate):
         trades_with_formatted_date = []
         for trade in result.trades:
             trade_copy = trade.copy()
-            if isinstance(trade['date'], datetime):
-                trade_copy['date'] = trade['date'].date()  # 只保留日期部分
-            elif isinstance(trade['date'], str) and len(trade['date']) > 10:  # 如果是带时间的字符串
-                trade_copy['date'] = trade['date'][:10]  # 只保留 YYYY-MM-DD 部分
+            if isinstance(trade["date"], datetime):
+                trade_copy["date"] = trade["date"].date()  # 只保留日期部分
+            elif (
+                isinstance(trade["date"], str) and len(trade["date"]) > 10
+            ):  # 如果是带时间的字符串
+                trade_copy["date"] = trade["date"][:10]  # 只保留 YYYY-MM-DD 部分
             trades_with_formatted_date.append(trade_copy)
-        
+
         # 创建一个新的结果对象，避免修改原始数据
         formatted_result = BacktestResult(
             symbol=result.symbol,
@@ -242,18 +254,18 @@ class EmailNotifyTemplate(NotifyTemplate):
         """发送邮件"""
         try:
             msg = MIMEMultipart("alternative")
-            
+
             # 获取股票名称
             symbol_info = self._get_symbol_info(result.symbol)
-            name = symbol_info.get('name', '')
-            
+            name = symbol_info.get("name", "")
+
             # 获取最后交易日期
             last_date = result.end_date.strftime("%Y-%m-%d")
-            
+
             # 构建邮件标题
             signal_text = f"【{result.next_signal['action']}】"
             msg["Subject"] = f"{signal_text}{name}({result.symbol})-{last_date}"
-            
+
             msg["From"] = self.smtp_username
             msg["To"] = ", ".join(self.recipients)
             msg.attach(MIMEText(message, "html"))
@@ -262,9 +274,9 @@ class EmailNotifyTemplate(NotifyTemplate):
                 smtp_server=self.smtp_server,
                 smtp_port=self.smtp_port,
                 username=self.smtp_username,
-                password=self.smtp_password
+                password=self.smtp_password,
             )
-            
+
             return notifier.send(self.recipients, msg["Subject"], message)
         except Exception as e:
             logger.error(f"Failed to send email notification: {e}")
@@ -314,28 +326,31 @@ class NotifyManager:
         """生成消息预览"""
         if not self.templates:
             return "No notification templates available"
-            
+
         # 优先使用邮件模板，因为它包含更详细的信息
         for template in self.templates:
             if isinstance(template, EmailNotifyTemplate):
                 return template.format_message(result)
-        
+
         # 如果没有邮件模板，使用第一个可用的模板
         return self.templates[0].format_message(result)
 
     def _get_template(self, template_type: str) -> Optional[NotifyTemplate]:
         """取指定类型的模板"""
         for template in self.templates:
-            if (template_type == "email" and isinstance(template, EmailNotifyTemplate)) or \
-               (template_type == "wecom" and isinstance(template, WecomNotifyTemplate)):
+            if (
+                template_type == "email" and isinstance(template, EmailNotifyTemplate)
+            ) or (
+                template_type == "wecom" and isinstance(template, WecomNotifyTemplate)
+            ):
                 return template
         return None
 
 
 def create_backtest_result(results: Dict, strategy_params: Dict) -> BacktestResult:
     """从回测结果创建BacktestResult对象"""
-    metrics = results.get('metrics', {})
-    
+    metrics = results.get("metrics", {})
+
     # 获取股票信息
     try:
         db_client = DBClient()
@@ -364,5 +379,7 @@ def create_backtest_result(results: Dict, strategy_params: Dict) -> BacktestResu
         trades=results.get("trades", []),
         strategy_params=strategy_params,
         metrics=metrics,
-        next_signal=results.get("next_signal", {"action": "观察", "conditions": [], "stop_loss": None}),
+        next_signal=results.get(
+            "next_signal", {"action": "观察", "conditions": [], "stop_loss": None}
+        ),
     )
