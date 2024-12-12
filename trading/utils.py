@@ -38,23 +38,6 @@ def print_metrics(metrics: dict):
             "复合年化收益",
             f"{metrics['cagr']:>12.2f}%",
         ),
-        # 市场指标
-        (
-            "总交易额",
-            f"{metrics.get('total_trade_value', 0):>12.2f}",
-            "买入总额",
-            f"{metrics.get('total_buy_value', 0):>12.2f}",
-            "卖出总额",
-            f"{metrics.get('total_sell_value', 0):>12.2f}",
-        ),
-        (
-            "换手率",
-            f"{metrics.get('turnover_rate', 0):>12.2f}%",
-            "日均交易额",
-            f"{metrics.get('avg_trade_value', 0):>12.2f}",
-            "交易频率",
-            f"{metrics.get('trade_frequency', 0):>12.2f}",
-        ),
         # 交易统计
         (
             "总交易次数",
@@ -93,17 +76,9 @@ def print_metrics(metrics: dict):
             "Calmar比率",
             f"{metrics['calmar_ratio']:>12.2f}",
             "索提诺比率",
-            f"{metrics.get('sortino_ratio', 0):>12.2f}",
-            "信息比率",
-            f"{metrics.get('information_ratio', 0):>12.2f}",
-        ),
-        (
-            "Beta",
-            f"{metrics.get('beta', 0):>12.2f}",
-            "Alpha",
-            f"{metrics.get('alpha', 0):>12.2f}%",
+            f"{metrics['sortino_ratio']:>12.2f}",
             "波动率",
-            f"{metrics.get('volatility', 0):>12.2f}%",
+            f"{metrics['volatility']:>12.2f}%",
         ),
         (
             "VWR",
@@ -111,7 +86,7 @@ def print_metrics(metrics: dict):
             "SQN",
             f"{metrics['sqn']:>12.2f}",
             "最大亏损",
-            f"{metrics.get('max_loss', 0):>12.2f}",
+            f"{metrics['max_loss']:>12.2f}",
         ),
         # 连续交易统计
         (
@@ -130,6 +105,23 @@ def print_metrics(metrics: dict):
             f"{metrics['start_date'].strftime('%Y-%m-%d'):>12}",
             "结束日期", 
             f"{metrics['end_date'].strftime('%Y-%m-%d'):>12}",
+        ),
+        # 波动率相关指标
+        (
+            "波动率",
+            f"{metrics.get('volatility', 0):>12.2f}%",
+            "Beta系数",
+            f"{metrics.get('beta', 0):>12.2f}",
+            "Alpha",
+            f"{metrics.get('alpha', 0):>12.2f}%",
+        ),
+        (
+            "Beta参考",
+            f"{str(metrics.get('benchmark_symbol', 'N/A')):>12}",
+            "Beta状态",
+            f"{metrics.get('beta_status', 'N/A'):>12}",
+            "最大亏损",
+            f"{metrics.get('max_loss', 0):>12.2f}%",
         ),
     ]
 

@@ -17,6 +17,7 @@ from tabulate import tabulate
 
 from analyzers import PerformanceAnalyzer
 from db import DBClient, SymbolInfo
+from db import TradingData
 from notify import NotifyManager, create_backtest_result
 from utils import (
     print_metrics,
@@ -499,29 +500,23 @@ class DualMAStrategy(bt.Strategy):
 
         return signal
 
-    def _generate_report(self, strat, initial_capital, final_value, trade_records):
+    def _generate_report(self, strat, initial_capital, final_value, trade_records, metrics):
         """生成回测报告"""
-        last_trade_date = strat.data.datetime.datetime()
-
-        # 收集分析器结果
+        # 获取分析器结果
         analyzers_results = {
             "trades": strat.analyzers.trades.get_analysis(),
             "sharpe": strat.analyzers.sharpe.get_analysis(),
             "drawdown": strat.analyzers.drawdown.get_analysis(),
             "vwr": strat.analyzers.vwr.get_analysis(),
-            "last_date": last_trade_date,
+            "sqn": strat.analyzers.sqn.get_analysis(),
+            "last_date": strat.data.datetime.datetime()
         }
-
-        # 使用性能分析器计算指标
-        metrics = PerformanceAnalyzer.calculate_metrics(
-            initial_capital, final_value, trade_records, analyzers_results
-        )
 
         # 计算总收益率
         total_return = ((final_value / initial_capital) - 1) * 100
 
-        # 预测下一个交易信号 - 这里修改调用方式
-        next_signal = strat._predict_next_signal()  # 直接调用strat的方法
+        # 预测下一个交易信号
+        next_signal = strat._predict_next_signal()
 
         # 转换所有交易记录
         all_trades = [
@@ -551,7 +546,7 @@ class DualMAStrategy(bt.Strategy):
             "all_trades": all_trades,
             "trades": recent_trades,
             "next_signal": next_signal,
-            "last_trade_date": last_trade_date,
+            "last_trade_date": strat.data.datetime.datetime(),
         }
 
 
@@ -566,11 +561,32 @@ class BacktestRunner:
         symbol: str,
         start_date: datetime,
         end_date: datetime,
-        initial_capital: float = 100000.0,
-        commission_rate: float = 0.0001,  # 默认万分之一
-        **strategy_params,
+        params: dict,
     ) -> Dict:
         """运行回测"""
+        # 添加基准参数到params
+        if "benchmark" not in params and hasattr(self, "benchmark"):
+            params["benchmark"] = self.benchmark
+        if "risk_free_rate" not in params and hasattr(self, "risk_free_rate"):
+            params["risk_free_rate"] = self.risk_free_rate
+
+        return self.run_single_backtest(
+            symbol,
+            start_date,
+            end_date,
+            params,
+        )
+
+    def _add_analyzers(self, cerebro: bt.Cerebro):
+        """添加分析器"""
+        cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name="sharpe")
+        cerebro.addanalyzer(bt.analyzers.DrawDown, _name="drawdown")
+        cerebro.addanalyzer(bt.analyzers.TradeAnalyzer, _name="trades")
+        cerebro.addanalyzer(bt.analyzers.VWR, _name="vwr")  # 添加 VWR 分析器
+        cerebro.addanalyzer(bt.analyzers.SQN, _name="sqn")  # 添加 SQN 分析器
+
+    def run_single_backtest(self, symbol: str, start_date: datetime, end_date: datetime, params: dict) -> Dict:
+        """运行单次回测"""
         # 获取数据
         data = self._prepare_data(symbol, start_date, end_date)
         if data.empty:
@@ -583,93 +599,129 @@ class BacktestRunner:
         data_feed = self._create_data_feed(data)
         cerebro.adddata(data_feed)
 
-        # 设置初始资金
-        cerebro.broker.setcash(initial_capital)
+        # 从params中分离出非策略参数
+        initial_capital = params.pop("initial_capital")
+        commission_rate = params.pop("commission_rate", 0.0001)
+        benchmark = params.pop("benchmark", None)  # 移除基准参数
+        risk_free_rate = params.pop("risk_free_rate", 0.03)  # 移除无风险利率参数
 
-        # 设置手续费
+        # 获取基准数据
+        benchmark_returns = None
+        if benchmark:
+            benchmark_returns = self._get_benchmark_returns(
+                benchmark, 
+                start_date, 
+                end_date
+            )
+
+        # 设置初始资金和手续费
+        cerebro.broker.setcash(initial_capital)
         cerebro.broker.setcommission(commission=commission_rate)
 
-        # 添加策略
-        cerebro.addstrategy(DualMAStrategy, **strategy_params)
+        # 添加策略（只传递策略相关的参数）
+        cerebro.addstrategy(DualMAStrategy, **params)
 
         # 添加分析器
-        cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name="sharpe")
-        cerebro.addanalyzer(bt.analyzers.DrawDown, _name="drawdown")
-        cerebro.addanalyzer(bt.analyzers.TradeAnalyzer, _name="trades")
-        cerebro.addanalyzer(bt.analyzers.VWR, _name="vwr")  # 添加 VWR 分析器
+        self._add_analyzers(cerebro)
 
         # 运行回测
         results = cerebro.run()
+        if not results:
+            return None
+
         strat = results[0]
 
-        # 成回测报告，添加易记录
+        # 获取分析器结果
+        analyzers_results = {
+            "trades": strat.analyzers.trades.get_analysis(),
+            "sharpe": strat.analyzers.sharpe.get_analysis(),
+            "drawdown": strat.analyzers.drawdown.get_analysis(),
+            "vwr": strat.analyzers.vwr.get_analysis(),
+            "sqn": strat.analyzers.sqn.get_analysis(),
+            "last_date": strat.data.datetime.datetime()
+        }
+
+        # 生成回测报告
+        metrics = PerformanceAnalyzer.calculate_metrics(
+            initial_capital=initial_capital,
+            final_value=cerebro.broker.getvalue(),
+            trade_records=strat.trade_records,
+            analyzers_results=analyzers_results,
+            benchmark_data=benchmark_returns,
+            benchmark_symbol=benchmark,
+            risk_free_rate=risk_free_rate
+        )
+
         return self._generate_report(
-            strat, initial_capital, cerebro.broker.getvalue(), strat.trade_records
+            strat=strat,
+            initial_capital=initial_capital,
+            final_value=cerebro.broker.getvalue(),
+            trade_records=strat.trade_records,
+            metrics=metrics  # 传递metrics参数
         )
 
     def _prepare_data(
         self, symbol: str, start_date: datetime, end_date: datetime
     ) -> pd.DataFrame:
         """准备回测数据"""
-        data = self.db_client.query_by_symbol_and_date_range(
-            symbol, start_date, end_date
-        )
-        df = pd.DataFrame(data)
+        with self.db_client.Session() as session:
+            df = pd.read_sql(
+                session.query(TradingData)
+                .filter(
+                    TradingData.symbol == symbol,
+                    TradingData.date >= start_date,
+                    TradingData.date <= end_date
+                )
+                .statement,
+                session.bind
+            )
 
-        # 将 date 转换为 datetime
+        if df.empty:
+            return df
+
+        # 确保日期列是datetime类型
         df["date"] = pd.to_datetime(df["date"])
 
-        # 确保有价格列都是 float 类型
-        price_columns = ["open_price", "close_price", "high", "low"]
+        # 确保价格列都是float类型
+        price_columns = ["open_price", "close_price", "high", "low"]  # 使用正确的列名
         for col in price_columns:
             df[col] = df[col].astype(float)
 
-        df["volume"] = df["volume"].astype(int)
+        # 确保成交量是float类型
+        df["volume"] = df["volume"].astype(float)
 
         return df
 
     def _create_data_feed(self, data: pd.DataFrame) -> bt.feeds.PandasData:
-        """创建数据源"""
-        # 确保索引是 datetime
-        data.set_index("date", inplace=True)
-
-        # 创建数据源
-        data_feed = bt.feeds.PandasData(
+        """创建backtrader数据源"""
+        return bt.feeds.PandasData(
             dataname=data,
-            datetime=None,  # 使用索引作为日期时间
-            open="open_price",
-            high="high",
-            low="low",
-            close="close_price",
-            volume="volume",
-            openinterest=-1,
+            datetime='date',
+            open='open_price',
+            high='high',  # 使用正确的列名
+            low='low',    # 使用正确的列名
+            close='close_price',
+            volume='volume',
+            openinterest=-1
         )
 
-        return data_feed
-
-    def _generate_report(self, strat, initial_capital, final_value, trade_records):
+    def _generate_report(self, strat, initial_capital, final_value, trade_records, metrics):
         """生成回测报告"""
-        last_trade_date = strat.data.datetime.datetime()
-
-        # 收集分析器结果
+        # 获取分析器结果
         analyzers_results = {
             "trades": strat.analyzers.trades.get_analysis(),
             "sharpe": strat.analyzers.sharpe.get_analysis(),
             "drawdown": strat.analyzers.drawdown.get_analysis(),
             "vwr": strat.analyzers.vwr.get_analysis(),
-            "last_date": last_trade_date,
+            "sqn": strat.analyzers.sqn.get_analysis(),
+            "last_date": strat.data.datetime.datetime()
         }
-
-        # 使用性能分析器计算指标
-        metrics = PerformanceAnalyzer.calculate_metrics(
-            initial_capital, final_value, trade_records, analyzers_results
-        )
 
         # 计算总收益率
         total_return = ((final_value / initial_capital) - 1) * 100
 
-        # 预测下一个交易信号 - 这里修改调用方式
-        next_signal = strat._predict_next_signal()  # 直接调用strat的方法
+        # 预测下一个交易信号
+        next_signal = strat._predict_next_signal()
 
         # 转换所有交易记录
         all_trades = [
@@ -699,7 +751,7 @@ class BacktestRunner:
             "all_trades": all_trades,
             "trades": recent_trades,
             "next_signal": next_signal,
-            "last_trade_date": last_trade_date,
+            "last_trade_date": strat.data.datetime.datetime(),
         }
 
     def _predict_next_signal(self, strat) -> Dict:
@@ -799,80 +851,130 @@ class BacktestRunner:
 
         return signal
 
+    def run_parameter_combinations(
+        self,
+        symbol: str,
+        start_date: datetime,
+        end_date: datetime,
+        initial_capital: float,
+        commission_rate: float,
+        base_params: Dict,
+        param_ranges: Dict,
+        max_workers: Optional[int] = None,
+    ) -> Dict:
+        """运行参数组合回测"""
+        # 参数名称映射
+        param_name_map = {
+            "ma_short": "short_period",
+            "ma_long": "long_period",
+            "chandelier_period": "chandelier_period",
+            "chandelier_multiplier": "chandelier_multiplier",
+            "adr_period": "adr_period",
+            "adr_multiplier": "adr_multiplier",
+        }
+
+        # 生成参数组合
+        param_combinations = []
+        for param_name, param_range in param_ranges.items():
+            values = parse_range(param_range)
+            if param_name.endswith("_period") or param_name in ["ma_short", "ma_long"]:
+                values = [int(v) for v in values]
+            param_combinations.append([(param_name, v) for v in values])
+
+        # 生成所有可能的参数组合
+        all_combinations = list(product(*param_combinations))
+        total_combinations = len(all_combinations)
+
+        # 设置默认进程数
+        if max_workers is None:
+            max_workers = min(multiprocessing.cpu_count(), total_combinations)
+
+        logger.info(
+            f"开始并行回测，共 {total_combinations} 个参数组合，使用 {max_workers} 个进程"
+        )
+
+        # 准备进程池
+        max_workers = max_workers or min(multiprocessing.cpu_count(), total_combinations)
+        results = []
+
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+            future_to_params = {}
+            for combo in all_combinations:
+                # 构建完整的参数字典
+                params = base_params.copy()
+                
+                # 使用参数名称映射
+                for name, value in dict(combo).items():
+                    strategy_param_name = param_name_map.get(name, name)
+                    params[strategy_param_name] = value
+
+                # 添加其他必要参数
+                params.update({
+                    "initial_capital": initial_capital,
+                    "commission_rate": commission_rate
+                })
+
+                # 提交任务
+                future = executor.submit(
+                    self._run_single_combination,
+                    symbol,
+                    start_date,
+                    end_date,
+                    params
+                )
+                future_to_params[future] = params
+
+            # 处理完成的任务
+            completed = 0
+            for future in as_completed(future_to_params):
+                completed += 1
+                logger.info(f"进度: {completed}/{total_combinations} ({completed/total_combinations*100:.1f}%)")
+                
+                result = future.result()
+                if result is not None:
+                    results.append(result)
+
+        # 过滤掉None结果并排序
+        valid_results = [r for r in results if r is not None]
+        if not valid_results:
+            logger.error("所有参数组合回测都失败了")
+            return {"combinations": [], "best_annual_return": None}
+
+        # 按不同指标排序
+        sorted_by_annual_return = sorted(
+            valid_results,
+            key=lambda x: x["annual_return"],
+            reverse=True
+        )
+
+        sorted_by_drawdown = sorted(
+            valid_results,
+            key=lambda x: x["max_drawdown"]
+        )
+
+        sorted_by_sharpe = sorted(
+            valid_results,
+            key=lambda x: x["full_result"]["metrics"]["sharpe_ratio"],
+            reverse=True
+        )
+
+        return {
+            "combinations": sorted_by_annual_return,
+            "best_annual_return": sorted_by_annual_return[0] if sorted_by_annual_return else None,
+            "min_drawdown": sorted_by_drawdown[0] if sorted_by_drawdown else None,
+            "best_sharpe": sorted_by_sharpe[0] if sorted_by_sharpe else None,
+        }
+
     @staticmethod
-    def _run_single_combination(params: Dict, base_config: Dict) -> Dict:
+    def _run_single_combination(symbol: str, start_date: datetime, end_date: datetime, params: dict) -> Dict:
         """运行单个参数组合的回测"""
         try:
-            # 创建回测引擎
-            cerebro = bt.Cerebro()
+            runner = BacktestRunner(DBClient())  # 创建新的实例
+            result = runner.run_single_backtest(symbol, start_date, end_date, params)
+            if result is None:
+                return None
 
-            # 添加数据
-            data_feed = bt.feeds.PandasData(
-                dataname=base_config["df"],
-                datetime=None,
-                open="open_price",
-                high="high",
-                low="low",
-                close="close_price",
-                volume="volume",
-                openinterest=-1,
-            )
-            cerebro.adddata(data_feed)
-
-            # 设置初始资金和手续费
-            cerebro.broker.setcash(base_config["initial_capital"])
-            cerebro.broker.setcommission(commission=base_config["commission_rate"])
-
-            # 添加策略
-            cerebro.addstrategy(DualMAStrategy, **params)
-
-            # 添加分析器
-            cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name="sharpe")
-            cerebro.addanalyzer(bt.analyzers.DrawDown, _name="drawdown")
-            cerebro.addanalyzer(bt.analyzers.TradeAnalyzer, _name="trades")
-            cerebro.addanalyzer(bt.analyzers.VWR, _name="vwr")
-
-            # 运行回测
-            results = cerebro.run()
-            strat = results[0]
-
-            # 生成回测报告
-            final_value = cerebro.broker.getvalue()
-            result = {
-                "initial_capital": base_config["initial_capital"],
-                "final_value": final_value,
-                "total_return": ((final_value / base_config["initial_capital"]) - 1)
-                * 100,
-                "metrics": PerformanceAnalyzer.calculate_metrics(
-                    base_config["initial_capital"],
-                    final_value,
-                    strat.trade_records,
-                    {
-                        "trades": strat.analyzers.trades.get_analysis(),
-                        "sharpe": strat.analyzers.sharpe.get_analysis(),
-                        "drawdown": strat.analyzers.drawdown.get_analysis(),
-                        "vwr": strat.analyzers.vwr.get_analysis(),
-                    },
-                ),
-                "all_trades": [
-                    {
-                        "date": t.date.strftime("%Y-%m-%d %H:%M:%S"),
-                        "action": t.action,
-                        "price": t.price,
-                        "size": t.size,
-                        "value": t.value,
-                        "commission": t.commission,
-                        "pnl": t.pnl,
-                        "total_value": t.total_value,
-                        "signal_reason": t.signal_reason,
-                        "cash": t.cash,
-                    }
-                    for t in strat.trade_records
-                ],
-                "next_signal": strat._predict_next_signal(),
-                "last_trade_date": strat.data.datetime.datetime(),
-            }
-
+            # 确保返回的结果格式正确
             return {
                 "params": params,
                 "annual_return": result["metrics"]["annual_return"],
@@ -886,135 +988,48 @@ class BacktestRunner:
                 ),
                 "full_result": result,
             }
+
         except Exception as e:
             logger.error(f"回测失败，参数: {params}, 错误: {str(e)}")
             return None
 
-    def run_parameter_combinations(
-        self,
-        symbol: str,
-        start_date: datetime,
-        end_date: datetime,
-        initial_capital: float = 100000.0,
-        commission_rate: float = 0.0001,
-        base_params: Dict = None,
-        param_ranges: Dict = None,
-        max_workers: int = None,
-    ) -> Dict:
-        """运行参数组合的回测"""
-        # 在主进程中获取数据
-        data = self.db_client.query_by_symbol_and_date_range(
-            symbol, start_date, end_date
-        )
-
-        if not data:
-            raise ValueError(f"No data available for {symbol}")
-
-        # 准备DataFrame
-        df = pd.DataFrame(data)
-        df["date"] = pd.to_datetime(df["date"])
-        df.set_index("date", inplace=True)
-
-        # 参数名称映射
-        param_name_map = {
-            "ma_short": "short_period",
-            "ma_long": "long_period",
-            "chandelier_period": "chandelier_period",
-            "chandelier_multiplier": "chandelier_multiplier",
-            "adr_period": "adr_period",
-            "adr_multiplier": "adr_multiplier",
-        }
-
-        # 生成参数组合
-        param_lists = {}
-        for param, value_range in param_ranges.items():
-            if param in ["ma_short", "ma_long", "adr_period"]:
-                values = parse_range(value_range, 1.0)
-                param_lists[param] = [int(v) for v in values]
-            elif param == "chandelier_period":
-                values = parse_range(value_range, 5.0)
-                param_lists[param] = [int(v) for v in values]
-            elif param in ["chandelier_multiplier", "adr_multiplier"]:
-                param_lists[param] = parse_range(value_range, 0.1)
-
-        # 生成所有可能的参数组合
-        param_names = list(param_lists.keys())
-        param_values = [param_lists[name] for name in param_names]
-        combinations = list(product(*param_values))
-
-        # 过滤无效的参数组合
-        valid_combinations = []
-        for combo in combinations:
-            params = dict(zip(param_names, combo))
-            # 检查均线参数
-            if "ma_short" in params and "ma_long" in params:
-                if params["ma_short"] >= params["ma_long"]:
-                    continue
-            valid_combinations.append(combo)
-
-        combinations = valid_combinations
-
-        # 准备基础配置
-        base_config = {
-            "df": df,  # 直接传递DataFrame
-            "initial_capital": initial_capital,
-            "commission_rate": commission_rate,
-        }
-
-        # 设置并行进程数
-        if max_workers is None:
-            max_workers = multiprocessing.cpu_count()
-
-        # 存储所有回测结果
-        all_results = []
-        total_combinations = len(combinations)
-
-        logger.info(
-            f"开始并行回测，共 {total_combinations} 个参数组合，使用 {max_workers} 个进程"
-        )
-
-        with ProcessPoolExecutor(max_workers=max_workers) as executor:
-            # 提交所有任务
-            future_to_params = {}
-            for combo in combinations:
-                params = base_params.copy()
-                # 使用参数名称映射转换参数名
-                for name, value in zip(param_names, combo):
-                    strategy_param_name = param_name_map.get(name, name)
-                    params[strategy_param_name] = value
-
-                future = executor.submit(
-                    self._run_single_combination, params, base_config
-                )
-                future_to_params[future] = params
-
-            # 处理完成的任务
-            completed = 0
-            for future in as_completed(future_to_params):
-                completed += 1
-                params = future_to_params[future]
-                try:
-                    result = future.result()
-                    if result is not None:
-                        all_results.append(result)
-                    # 打印进度
-                    logger.info(
-                        f"进度: {completed}/{total_combinations} "
-                        f"({(completed/total_combinations*100):.1f}%)"
+    def _get_benchmark_returns(self, symbol: str, start_date: datetime, end_date: datetime) -> Dict[date, float]:
+        """获取基准数据的日收益率"""
+        benchmark_returns = {}
+        
+        try:
+            with self.db_client.Session() as session:
+                # 获取基准数据
+                data = (
+                    session.query(TradingData)
+                    .filter(
+                        TradingData.symbol == symbol,
+                        TradingData.date >= start_date,
+                        TradingData.date <= end_date
                     )
-                except Exception as e:
-                    logger.error(f"参数组合运行失败: {params}")
-                    logger.error(f"错误信息: {str(e)}")
+                    .order_by(TradingData.date)
+                    .all()
+                )
+                
+                if not data:
+                    logger.warning(f"未找到基准数据: {symbol}")
+                    return {}
 
-        if not all_results:
-            raise ValueError("所有参数组合都运行失败")
-
-        return {
-            "combinations": all_results,
-            "best_annual_return": max(all_results, key=lambda x: x["annual_return"]),
-            "min_drawdown": min(all_results, key=lambda x: x["max_drawdown"]),
-            "param_ranges": param_ranges,
-        }
+                # 计算日收益率
+                for i in range(1, len(data)):
+                    prev_close = float(data[i-1].close_price)
+                    curr_close = float(data[i].close_price)
+                    if prev_close > 0:  # 避免除以0
+                        daily_return = (curr_close / prev_close) - 1
+                        benchmark_returns[data[i].date] = daily_return  # 直接使用date对象
+                
+                logger.info(f"成功获取基准数据: {symbol}, 数据点数: {len(benchmark_returns)}")
+                    
+        except Exception as e:
+            logger.error(f"获取基准数据失败: {e}")
+            logger.exception(e)  # 添加详细的错误信息
+        
+        return benchmark_returns
 
 
 def parse_range(value: str, step: float = 1.0) -> List[float]:
@@ -1119,6 +1134,20 @@ def main():
     # 添加输出JSON参数
     parser.add_argument("--output-json", type=str, help="输出结果到指定的JSON文件")
 
+    # 添加市场基准参数
+    parser.add_argument(
+        "--benchmark", 
+        type=str, 
+        default="000300.SS",
+        help="市场基准代码，用于计算Beta和Alpha，例如：000300.SS表示沪深300"
+    )
+    parser.add_argument(
+        "--risk-free-rate",
+        type=float,
+        default=0.03,
+        help="无风险利率，用于计算Alpha，默认为3%"
+    )
+
     args = parser.parse_args()
 
     # 如果没有指定结束日期，使用当前日期
@@ -1218,33 +1247,50 @@ def main():
         if args.notify:
             results = results["best_annual_return"]["full_result"]
     else:
-        # 原有的单次回测逻辑
-        strategy_params = {
+        # 构建参数字典
+        params = {
+            "initial_capital": args.initial_capital,
+            "commission_rate": 0.0001,  # 默认手续费
             "use_ma": args.use_ma,
-            "short_period": int(float(args.ma_short)),
-            "long_period": int(float(args.ma_long)),
             "use_chandelier": args.use_chandelier,
-            "chandelier_period": int(float(args.chandelier_period)),
-            "chandelier_multiplier": float(args.chandelier_multiplier),
             "use_adr": args.use_adr,
-            "adr_period": int(float(args.adr_period)),
-            "adr_multiplier": float(args.adr_multiplier),
             "trade_start_time": args.trade_start_time,
             "trade_end_time": args.trade_end_time,
-            "position_size": args.position_size,
+            "benchmark": args.benchmark,
+            "risk_free_rate": args.risk_free_rate,
         }
+        
+        # 添加MA参数
+        if args.use_ma:
+            params.update({
+                "short_period": int(float(args.ma_short)),  # 确保是整数
+                "long_period": int(float(args.ma_long)),    # 确保是整数
+            })
+        
+        # 添加吊灯止损参数
+        if args.use_chandelier:
+            params.update({
+                "chandelier_period": int(float(args.chandelier_period)),  # 确保是整数
+                "chandelier_multiplier": float(args.chandelier_multiplier),
+            })
+        
+        # 添加ADR止损参数
+        if args.use_adr:
+            params.update({
+                "adr_period": int(float(args.adr_period)),  # 确保是整数
+                "adr_multiplier": float(args.adr_multiplier),
+            })
 
+        # 运行回测
         results = runner.run(
             symbol=args.symbol,
             start_date=datetime.strptime(args.start_date, "%Y-%m-%d"),
             end_date=datetime.strptime(args.end_date, "%Y-%m-%d"),
-            initial_capital=args.initial_capital,
-            commission_rate=args.commission_rate,
-            **strategy_params,
+            params=params
         )
 
         # 将策略参数添加到结果中
-        results.update(strategy_params)
+        results.update(params)
 
         # 打印结果
         logger.info("\n=== 回测结果 ===")
