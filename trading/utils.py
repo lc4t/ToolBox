@@ -290,19 +290,39 @@ def format_params_string(params: dict) -> str:
 
     return ", ".join(parts)
 
-def print_best_results(results: dict):
+def print_best_results(results: Dict):
     """打印最佳结果"""
-    # 打印最佳年化收益率组合
-    logger.info("\n=== 最佳年化收益率组合 ===")
-    best_return = results["best_annual_return"]
-    logger.info(f"参数: {format_params_string(best_return['params'])}")
-    logger.info(f"年化收益率: {best_return['annual_return']:.2f}%")
+    if not results.get("combinations"):
+        logger.warning("没有有效的回测结果")
+        return
 
-    # 打印最小回撤组合
-    logger.info("\n=== 最小回撤组合 ===")
-    min_dd = results["min_drawdown"]
-    logger.info(f"参数: {format_params_string(min_dd['params'])}")
-    logger.info(f"最大回撤: {min_dd['max_drawdown']:.2f}%")
+    # 打印年化收益率最高的组合
+    best_return = results.get("best_annual_return")
+    if best_return:
+        logger.info("\n=== 最佳年化收益率组合 ===")
+        logger.info(f"参数: {format_params_string(best_return['params'])}")
+        logger.info(f"年化收益率: {best_return['annual_return']:.2f}%")
+        logger.info(f"最大回撤: {best_return['max_drawdown']:.2f}%")
+        logger.info(f"交易次数: {best_return['total_trades']}")
+
+    # 打印最小回撤的组合
+    min_dd = results.get("min_drawdown")
+    if min_dd:
+        logger.info("\n=== 最小回撤组合 ===")
+        logger.info(f"参数: {format_params_string(min_dd['params'])}")
+        logger.info(f"年化收益率: {min_dd['annual_return']:.2f}%")
+        logger.info(f"最大回撤: {min_dd['max_drawdown']:.2f}%")
+        logger.info(f"交易次数: {min_dd['total_trades']}")
+
+    # 打印最佳夏普比率的组合
+    best_sharpe = results.get("best_sharpe")
+    if best_sharpe:
+        logger.info("\n=== 最佳夏普比率组合 ===")
+        logger.info(f"参数: {format_params_string(best_sharpe['params'])}")
+        logger.info(f"年化收益率: {best_sharpe['annual_return']:.2f}%")
+        logger.info(f"最大回撤: {best_sharpe['max_drawdown']:.2f}%")
+        logger.info(f"夏普比率: {best_sharpe['full_result']['metrics']['sharpe_ratio']:.2f}")
+        logger.info(f"交易次数: {best_sharpe['total_trades']}")
 
 def get_stock_name(db_client: DBClient, symbol: str) -> str:
     """从数据库获取股票名称"""
