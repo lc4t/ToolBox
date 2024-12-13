@@ -867,6 +867,7 @@ class BacktestRunner:
         initial_capital: float,
         commission_rate: float,
         base_params: Dict,
+        market_params: Dict,
         param_ranges: Dict,
         max_workers: Optional[int] = None,
     ) -> Dict:
@@ -889,15 +890,16 @@ class BacktestRunner:
 
         # 获取基准数据
         benchmark_data = {}
-        if base_params.get("benchmark"):
+        if market_params.get("benchmark"):
             logger.info("正在获取基准数据...")
             benchmark_data = self._get_benchmark_returns(
-                base_params["benchmark"], 
+                market_params["benchmark"], 
                 start_date, 
                 end_date
             )
 
         # 将数据打包
+        assert benchmark_data
         backtest_data = BacktestData(
             symbol_data=symbol_data,
             benchmark_data=benchmark_data,
@@ -997,7 +999,7 @@ class BacktestRunner:
     def _run_single_combination_with_data(backtest_data: BacktestData, params: dict) -> Dict:
         """使用预加载数据运行单个参数组合的回测"""
         try:
-            # 创建回测引擎
+        # 创建回测引擎
             cerebro = bt.Cerebro()
 
             # 添加数据
@@ -1049,6 +1051,7 @@ class BacktestRunner:
             }
 
             # 计算性能指标
+            assert backtest_data.benchmark_data != {}
             metrics = PerformanceAnalyzer.calculate_metrics(
                 initial_capital=initial_capital,  # 使用分离出的初始资金
                 final_value=cerebro.broker.getvalue(),
@@ -1058,6 +1061,7 @@ class BacktestRunner:
                 benchmark_symbol=params.get("benchmark"),
                 risk_free_rate=params.get("risk_free_rate", 0.03)
             )
+            # logger.info(f"###回测结果：{metrics}")
 
             # 还原params中的回测参数（为了保持结果的完整性）
             params["initial_capital"] = initial_capital
@@ -1307,6 +1311,12 @@ def main():
             "trade_end_time": args.trade_end_time,
         }
 
+        # 添加市场基准参数
+        market_params = {
+            "benchmark": args.benchmark,
+            "risk_free_rate": args.risk_free_rate,
+        }
+
         # 准备范围参数
         param_ranges = {}
         if args.use_ma:
@@ -1339,6 +1349,7 @@ def main():
             initial_capital=args.initial_capital,
             commission_rate=args.commission_rate,
             base_params=base_params,
+            market_params=market_params,
             param_ranges=param_ranges,
             max_workers=args.workers,  # 添加这个参数
         )

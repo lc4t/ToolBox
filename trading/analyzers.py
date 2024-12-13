@@ -193,7 +193,7 @@ class PerformanceAnalyzer:
                         if benchmark_var > 0:
                             beta = cov / benchmark_var
                             beta_status = f"已计算 (匹配率{matched_dates/len(dates)*100:.1f}%)"
-                            logger.info(f"Beta计算成功: {beta:.3f}")
+                            # logger.info(f"Beta计算成功: {beta:.3f}")
                             
                             # 计算Alpha (使用年化收益率)
                             strategy_mean_return = np.mean(log_strategy_returns) * 252
