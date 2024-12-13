@@ -46,11 +46,19 @@ SEPARATOR_WIDTH = 60
 SECTION_SEPARATOR = "=" * SEPARATOR_WIDTH
 SUBSECTION_SEPARATOR = "-" * SEPARATOR_WIDTH
 
+# 在文件开头的导入语句之后，类定义之前添加 BacktestData 类定义
+@dataclass
+class BacktestData:
+    """回测数据类，用于在进程间传递数据"""
+    symbol_data: pd.DataFrame  # 股票数据
+    benchmark_data: Dict[date, float]  # 基准数据的日收益率
+    symbol: str
+    start_date: datetime
+    end_date: datetime
 
 @dataclass
 class TradeRecord:
     """详细交易记录"""
-
     date: datetime
     action: str  # "BUY" or "SELL"
     price: float
@@ -61,7 +69,6 @@ class TradeRecord:
     total_value: float  # 交易后的总资产
     signal_reason: str  # 交易信号原因
     cash: float  # 交易后的现金
-
 
 class SignalCalculator:
     """信号计算器，独立处理各种策略的信号计算"""
@@ -873,6 +880,31 @@ class BacktestRunner:
             "adr_multiplier": "adr_multiplier",
         }
 
+        # 在主进程中预先获取所有需要的数据
+        logger.info("正在获取回测数据...")
+        symbol_data = self._prepare_data(symbol, start_date, end_date)
+        if symbol_data.empty:
+            raise ValueError("No data available for backtesting")
+
+        # 获取基准数据
+        benchmark_data = {}
+        if base_params.get("benchmark"):
+            logger.info("正在获取基准数据...")
+            benchmark_data = self._get_benchmark_returns(
+                base_params["benchmark"], 
+                start_date, 
+                end_date
+            )
+
+        # 将数据打包
+        backtest_data = BacktestData(
+            symbol_data=symbol_data,
+            benchmark_data=benchmark_data,
+            symbol=symbol,
+            start_date=start_date,
+            end_date=end_date
+        )
+
         # 生成参数组合
         param_combinations = []
         for param_name, param_range in param_ranges.items():
@@ -881,7 +913,6 @@ class BacktestRunner:
                 values = [int(v) for v in values]
             param_combinations.append([(param_name, v) for v in values])
 
-        # 生成所有可能的参数组合
         all_combinations = list(product(*param_combinations))
         total_combinations = len(all_combinations)
 
@@ -889,37 +920,27 @@ class BacktestRunner:
         if max_workers is None:
             max_workers = min(multiprocessing.cpu_count(), total_combinations)
 
-        logger.info(
-            f"开始并行回测，共 {total_combinations} 个参数组合，使用 {max_workers} 个进程"
-        )
+        logger.info(f"开始并行回测，共 {total_combinations} 个参数组合，使用 {max_workers} 个进程")
 
         # 准备进程池
-        max_workers = max_workers or min(multiprocessing.cpu_count(), total_combinations)
         results = []
-
         with ProcessPoolExecutor(max_workers=max_workers) as executor:
             future_to_params = {}
             for combo in all_combinations:
-                # 构建完整的参数字典
                 params = base_params.copy()
-                
-                # 使用参数名称映射
                 for name, value in dict(combo).items():
                     strategy_param_name = param_name_map.get(name, name)
                     params[strategy_param_name] = value
 
-                # 添加其他必要参数
                 params.update({
                     "initial_capital": initial_capital,
                     "commission_rate": commission_rate
                 })
 
-                # 提交任务
+                # 传递预加载的数据
                 future = executor.submit(
-                    self._run_single_combination,
-                    symbol,
-                    start_date,
-                    end_date,
+                    self._run_single_combination_with_data,
+                    backtest_data,  # 传递数据对象
                     params
                 )
                 future_to_params[future] = params
@@ -934,13 +955,12 @@ class BacktestRunner:
                 if result is not None:
                     results.append(result)
 
-        # 过滤掉None结果并排序
+        # 过滤和排序结果
         valid_results = [r for r in results if r is not None]
         if not valid_results:
             logger.error("所有参数组合回测都失败了")
             return {"combinations": [], "best_annual_return": None}
 
-        # 按不同指标排序
         sorted_by_annual_return = sorted(
             valid_results,
             key=lambda x: x["annual_return"],
@@ -966,27 +986,110 @@ class BacktestRunner:
         }
 
     @staticmethod
-    def _run_single_combination(symbol: str, start_date: datetime, end_date: datetime, params: dict) -> Dict:
-        """运行单个参数组合的回测"""
+    def _run_single_combination_with_data(backtest_data: BacktestData, params: dict) -> Dict:
+        """使用预加载数据运行单个参数组合的回测"""
         try:
-            runner = BacktestRunner(DBClient())  # 创建新的实例
-            result = runner.run_single_backtest(symbol, start_date, end_date, params)
-            if result is None:
+            # 创建回测引擎
+            cerebro = bt.Cerebro()
+
+            # 添加数据
+            data_feed = bt.feeds.PandasData(
+                dataname=backtest_data.symbol_data,
+                datetime='date',
+                open='open_price',
+                high='high',
+                low='low',
+                close='close_price',
+                volume='volume',
+                openinterest=-1
+            )
+            cerebro.adddata(data_feed)
+
+            # 从params中分离出回测参数和策略参数
+            initial_capital = params.pop("initial_capital")
+            commission_rate = params.pop("commission_rate")
+
+            # 设置初始资金和手续费
+            cerebro.broker.setcash(initial_capital)
+            cerebro.broker.setcommission(commission=commission_rate)
+
+            # 添加策略（只传递策略相关的参数）
+            cerebro.addstrategy(DualMAStrategy, **params)
+
+            # 添加分析器
+            cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name="sharpe")
+            cerebro.addanalyzer(bt.analyzers.DrawDown, _name="drawdown")
+            cerebro.addanalyzer(bt.analyzers.TradeAnalyzer, _name="trades")
+            cerebro.addanalyzer(bt.analyzers.VWR, _name="vwr")
+            cerebro.addanalyzer(bt.analyzers.SQN, _name="sqn")
+
+            # 运行回测
+            results = cerebro.run()
+            if not results:
                 return None
 
-            # 确保返回的结果格式正确
+            strat = results[0]
+
+            # 获取分析器结果
+            analyzers_results = {
+                "trades": strat.analyzers.trades.get_analysis(),
+                "sharpe": strat.analyzers.sharpe.get_analysis(),
+                "drawdown": strat.analyzers.drawdown.get_analysis(),
+                "vwr": strat.analyzers.vwr.get_analysis(),
+                "sqn": strat.analyzers.sqn.get_analysis(),
+                "last_date": strat.data.datetime.datetime()
+            }
+
+            # 计算性能指标
+            metrics = PerformanceAnalyzer.calculate_metrics(
+                initial_capital=initial_capital,  # 使用分离出的初始资金
+                final_value=cerebro.broker.getvalue(),
+                trade_records=strat.trade_records,
+                analyzers_results=analyzers_results,
+                benchmark_data=backtest_data.benchmark_data,
+                benchmark_symbol=params.get("benchmark"),
+                risk_free_rate=params.get("risk_free_rate", 0.03)
+            )
+
+            # 还原params中的回测参数（为了保持结果的完整性）
+            params["initial_capital"] = initial_capital
+            params["commission_rate"] = commission_rate
+
+            # 在返回结果前，将 TradeRecord 对象转换为字典
+            trade_records_dict = [
+                {
+                    "date": trade.date.strftime("%Y-%m-%d %H:%M:%S"),
+                    "action": trade.action,
+                    "price": trade.price,
+                    "size": trade.size,
+                    "value": trade.value,
+                    "commission": trade.commission,
+                    "pnl": trade.pnl,
+                    "total_value": trade.total_value,
+                    "signal_reason": trade.signal_reason,
+                    "cash": trade.cash,
+                }
+                for trade in strat.trade_records
+            ]
+
             return {
                 "params": params,
-                "annual_return": result["metrics"]["annual_return"],
-                "max_drawdown": result["metrics"]["max_drawdown"],
-                "total_trades": result["metrics"]["total_trades"],
+                "annual_return": metrics["annual_return"],
+                "max_drawdown": metrics["max_drawdown"],
+                "total_trades": metrics["total_trades"],
                 "first_trade": (
-                    result["all_trades"][0]["date"] if result["all_trades"] else None
+                    trade_records_dict[0]["date"]
+                    if trade_records_dict else None
                 ),
                 "last_trade": (
-                    result["all_trades"][-1]["date"] if result["all_trades"] else None
+                    trade_records_dict[-1]["date"]
+                    if trade_records_dict else None
                 ),
-                "full_result": result,
+                "full_result": {
+                    "metrics": metrics,
+                    "all_trades": trade_records_dict,  # 使用转换后的字典列表
+                    "next_signal": strat._predict_next_signal()
+                }
             }
 
         except Exception as e:
