@@ -122,8 +122,8 @@ def print_metrics(metrics: Dict):
             f"{str(metrics.get('benchmark_symbol', 'N/A')):>12}",
             "Beta状态",
             f"{metrics.get('beta_status', 'N/A'):>12}",
-            "最大亏损",
-            f"{metrics.get('max_loss', 0):>12.2f}%",
+            "最大亏损比例",
+            f"{metrics.get('max_loss_pct', 0):>12.2f}%",
         ),
     ]
 
