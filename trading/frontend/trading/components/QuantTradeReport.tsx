@@ -324,11 +324,11 @@ function MetricsSection({ title, metrics, symbol }: { title: string; metrics: Me
 
     const percentageMetrics = [
       '年化收益率', '复合年化收益', 'Alpha', '最大回撤', '当前回撤',
-      '波动率', '胜率', '持仓比例'
+      '波动率', '胜率', '持仓比例', '最大亏损比例'
     ];
 
     const moneyMetrics = [
-      '总盈亏', '平均盈利', '平均亏损', '最大亏损'
+      '总盈亏', '平均盈利', '平均亏损', '最大亏损金额'
     ];
 
     const ratioMetrics = [

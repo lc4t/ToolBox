@@ -109,7 +109,7 @@ class PerformanceAnalyzer:
     def _calculate_risk_metrics(
         analyzers_results: Dict, 
         trade_records: List[TradeRecord],
-        annual_return: float,  # 添加年化收益率参数
+        annual_return: float,
         benchmark_data: Optional[Dict] = None,
         benchmark_symbol: Optional[str] = None,
         risk_free_rate: float = 0.03
@@ -119,15 +119,18 @@ class PerformanceAnalyzer:
         
         # 计算每日收益率序列
         daily_returns = []
+        daily_pnl = []  # 添加每日盈亏金额序列
         dates = []
         for i in range(1, len(trade_records)):
             prev_value = trade_records[i-1].total_value
             curr_value = trade_records[i].total_value
             daily_return = (curr_value / prev_value) - 1
+            daily_pnl.append(curr_value - prev_value)  # 计算每日盈亏金额
             daily_returns.append(daily_return)
             dates.append(trade_records[i].date.date())
         
         daily_returns = np.array(daily_returns)
+        daily_pnl = np.array(daily_pnl)
         
         # 计算波动率相关指标
         if len(daily_returns) > 0:
@@ -140,7 +143,8 @@ class PerformanceAnalyzer:
             downside_vol = np.std(downside_returns) * np.sqrt(252) * 100 if len(downside_returns) > 0 else 0
             
             # 计算最大亏损（单日最大跌幅）
-            max_loss = np.min(daily_returns) * 100  # 转换为百分比
+            max_loss_pct = np.min(daily_returns) * 100  # 百分比形式
+            max_loss_amount = np.min(daily_pnl)  # 金额形式
             
             # 计算夏普比率
             avg_return = np.mean(log_returns) * 252
@@ -207,7 +211,8 @@ class PerformanceAnalyzer:
         else:
             volatility = 0
             downside_vol = 0
-            max_loss = 0
+            max_loss_pct = 0
+            max_loss_amount = 0
             sortino = 0
             beta = 0
             alpha = 0
@@ -238,7 +243,8 @@ class PerformanceAnalyzer:
             "calmar_ratio": calmar_ratio,
             "volatility": volatility,
             "downside_vol": downside_vol,
-            "max_loss": max_loss,
+            "max_loss_amount": max_loss_amount,  # 最大亏损金额
+            "max_loss_pct": max_loss_pct,        # 最大亏损比例
             "beta": beta,
             "alpha": alpha,
             "beta_status": beta_status,

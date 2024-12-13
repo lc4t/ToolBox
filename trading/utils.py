@@ -23,8 +23,8 @@ def format_value(v):
     return v
 
 
-def print_metrics(metrics: dict):
-    """格式化打印性能指标"""
+def print_metrics(metrics: Dict):
+    """打印性能指标"""
     logger.info(f"\n{SECTION_SEPARATOR}")
     logger.info(f"{'性能指标':^{SEPARATOR_WIDTH}}")
     logger.info(SECTION_SEPARATOR)
@@ -67,28 +67,28 @@ def print_metrics(metrics: dict):
         ),
         # 风险指标
         (
-            "夏普比率",
-            f"{metrics['sharpe_ratio']:>12.2f}",
+            "年化波动率",
+            f"{metrics['volatility']:.2f}%",
             "最大回撤",
-            f"{metrics['max_drawdown']:>12.2f}%",
-            "当前回撤",
-            f"{metrics['current_drawdown']:>12.2f}%",
+            f"{metrics['max_drawdown']:.2f}%",
+            "最大亏损金额",
+            f"{metrics['max_loss_amount']:.2f}",
         ),
         (
-            "Calmar比率",
-            f"{metrics['calmar_ratio']:>12.2f}",
+            "最大亏损比例",
+            f"{metrics['max_loss_pct']:.2f}%",
+            "夏普比率",
+            f"{metrics['sharpe_ratio']:.2f}",
             "索提诺比率",
-            f"{metrics['sortino_ratio']:>12.2f}",
-            "波动率",
-            f"{metrics['volatility']:>12.2f}%",
+            f"{metrics['sortino_ratio']:.2f}",
         ),
         (
+            "卡玛比率",
+            f"{metrics['calmar_ratio']:.2f}",
             "VWR",
-            f"{metrics['vwr']:>12.2f}",
+            f"{metrics['vwr']:.2f}",
             "SQN",
-            f"{metrics['sqn']:>12.2f}",
-            "最大亏损",
-            f"{metrics['max_loss']:>12.2f}",
+            f"{metrics['sqn']:.2f}",
         ),
         # 连续交易统计
         (
@@ -445,11 +445,14 @@ def format_for_json(
                 "description": "收益率的标准差，反映策略的波动性和风险大小，越小越稳定",
             },
             {
-                "name": "最大亏损",
-                "value": round(
-                    metrics["max_loss"] * initial_capital / 100, 2
-                ),  # 转换为实际金额
+                "name": "最大亏损金额",
+                "value": round(metrics["max_loss_amount"], 2),  # 直接使用金额，不需要转换
                 "description": "单笔交易中的最大亏损金额，反映策略的风险控制能力",
+            },
+            {
+                "name": "最大亏损比例",
+                "value": round(metrics["max_loss_pct"], 2),
+                "description": "单笔交易中的最大亏损比例，反映策略的风险控制能力",
             },
             {
                 "name": "Beta系数",
