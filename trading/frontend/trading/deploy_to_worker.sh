@@ -13,6 +13,12 @@ if [ ! -f "package.json" ]; then
     exit 1
 fi
 
+# 获取北京时间的时间戳（UTC+8）
+get_beijing_time() {
+    # 使用 TZ 环境变量设置时区为 Asia/Shanghai
+    TZ='Asia/Shanghai' date '+%Y-%m-%dT%H:%M:%S+08:00'
+}
+
 # 清理函数
 clean_build() {
     echo "Cleaning previous build..."
@@ -25,6 +31,8 @@ if [ "$1" == "dev" ]; then
     # 本地开发模式
     echo "Starting local development server..."
     clean_build
+    # 设置构建时间（北京时间）
+    export NEXT_PUBLIC_BUILD_TIME=$(get_beijing_time)
     yarn build
     echo "Starting Wrangler development server..."
     yarn wrangler pages dev out --port 8787
@@ -32,6 +40,8 @@ elif [ "$1" == "deploy" ]; then
     # 部署模式
     echo "Building frontend..."
     clean_build
+    # 设置构建时间（北京时间）
+    export NEXT_PUBLIC_BUILD_TIME=$(get_beijing_time)
     yarn build
     
     echo "Deploying to Cloudflare Pages..."
