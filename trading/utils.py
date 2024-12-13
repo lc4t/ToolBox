@@ -156,27 +156,16 @@ def print_combination_result(idx: int, result: dict):
 
     # 构建参数字典
     if "params" not in result:
-        params = {
-            "use_ma": result.get("use_ma", False),
-            "short_period": result.get("short_period"),
-            "long_period": result.get("long_period"),
-            "use_chandelier": result.get("use_chandelier", False),
-            "chandelier_period": result.get("chandelier_period"),
-            "chandelier_multiplier": result.get("chandelier_multiplier"),
-            "use_adr": result.get("use_adr", False),
-            "adr_period": result.get("adr_period"),
-            "adr_multiplier": result.get("adr_multiplier"),
-        }
+        # 单参数回测的情况，需要从结果中提取指标
+        metrics = result.get("metrics", {})  # 直接从结果中获取指标
     else:
-        params = result["params"]
+        # 参数组合回测的情况
+        metrics = result.get("full_result", {}).get("metrics", {})
 
     # 格式化参数字符串
-    params_str = format_params_string(params)
+    params_str = format_params_string(result.get("params", result))  # 修改这里以适应两种情况
     logger.info(f"参数配置: {params_str}")
     logger.info(SUBSECTION_SEPARATOR)
-
-    # 获取关键指标
-    metrics = result.get("full_result", {}).get("metrics", {})
     
     # 构建表格数据
     table_data = [
