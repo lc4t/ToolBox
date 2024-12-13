@@ -142,9 +142,17 @@ class PerformanceAnalyzer:
             downside_returns = log_returns[log_returns < 0]
             downside_vol = np.std(downside_returns) * np.sqrt(252) * 100 if len(downside_returns) > 0 else 0
             
-            # 计算最大亏损（单日最大跌幅）
-            max_loss_pct = np.min(daily_returns) * 100  # 百分比形式
-            max_loss_amount = np.min(daily_pnl)  # 金额形式
+            # 计算最大亏损（最大回撤）
+            cumulative_returns = np.cumprod(1 + daily_returns)
+            rolling_max = np.maximum.accumulate(cumulative_returns)
+            drawdowns = (rolling_max - cumulative_returns) / rolling_max
+            max_loss_pct = np.max(drawdowns) * 100  # 百分比形式
+            
+            # 计算金额形式的最大回撤
+            cumulative_value = np.array([t.total_value for t in trade_records])
+            peak = np.maximum.accumulate(cumulative_value)
+            drawdown_amount = peak - cumulative_value
+            max_loss_amount = np.max(drawdown_amount)  # 金额形式
             
             # 计算夏普比率
             avg_return = np.mean(log_returns) * 252
@@ -177,7 +185,7 @@ class PerformanceAnalyzer:
                         matched_dates += 1
                 
                 if matched_dates > 0:
-                    logger.info(f"基准数据匹配率: {matched_dates}/{len(dates)} ({matched_dates/len(dates)*100:.2f}%)")
+                    logger.debug(f"基准数据匹配率: {matched_dates}/{len(dates)} ({matched_dates/len(dates)*100:.2f}%)")
                     
                     if len(benchmark_returns) > 5:  # 降低最小数据点要求
                         benchmark_returns = np.array(benchmark_returns)

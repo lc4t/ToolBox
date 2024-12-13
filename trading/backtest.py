@@ -402,7 +402,9 @@ class DualMAStrategy(bt.Strategy):
                 f"止损价={stop_price:.3f}]"
             )
         elif signal_type == "ADR Stop":
-            stop_price = self.entry_price - (self.params.adr_multiplier * self.adr[0])
+            stop_price = self.entry_price - (
+                self.params.adr_multiplier * self.adr[0]
+            )
             return (
                 f"ADR止损 "
                 f"[ADR={self.adr[0]:.3f}, "
@@ -952,7 +954,7 @@ class BacktestRunner:
             completed = 0
             for future in as_completed(future_to_params):
                 completed += 1
-                logger.info(f"进度: {completed}/{total_combinations} ({completed/total_combinations*100:.1f}%)")
+                print(f"\r进度: {completed}/{total_combinations} ({completed/total_combinations*100:.1f}%)", end="", flush=True)
                 
                 result = future.result()
                 if result is not None:
