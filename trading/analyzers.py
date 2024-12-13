@@ -230,7 +230,7 @@ class PerformanceAnalyzer:
         # 计算Calmar比率
         if max_drawdown != 0:
             calmar_ratio = annual_return / max_drawdown
-            logger.info(f"Calmar比率计算: 年化收益率({annual_return:.2f}%) / 最大回撤({max_drawdown:.2f}%) = {calmar_ratio:.2f}")
+            # logger.info(f"Calmar比率计算: 年化收益率({annual_return:.2f}%) / 最大回撤({max_drawdown:.2f}%) = {calmar_ratio:.2f}")
         else:
             calmar_ratio = 0
             logger.warning("无法计算Calmar比率: 最大回撤为0")

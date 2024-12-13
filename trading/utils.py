@@ -156,7 +156,6 @@ def print_combination_result(idx: int, result: dict):
 
     # 构建参数字典
     if "params" not in result:
-        # 单参数回测的情况
         params = {
             "use_ma": result.get("use_ma", False),
             "short_period": result.get("short_period"),
@@ -169,13 +168,49 @@ def print_combination_result(idx: int, result: dict):
             "adr_multiplier": result.get("adr_multiplier"),
         }
     else:
-        # 参数组合回测的情况
         params = result["params"]
 
     # 格式化参数字符串
     params_str = format_params_string(params)
     logger.info(f"参数配置: {params_str}")
     logger.info(SUBSECTION_SEPARATOR)
+
+    # 获取关键指标
+    metrics = result.get("full_result", {}).get("metrics", {})
+    
+    # 构建表格数据
+    table_data = [
+        ["年化收益率", f"{metrics.get('annual_return', 0):.2f}%"],
+        ["最大回撤", f"{metrics.get('max_drawdown', 0):.2f}%"],
+        ["夏普比率", f"{metrics.get('sharpe_ratio', 0):.2f}"],
+        ["波动率", f"{metrics.get('volatility', 0):.2f}%"],
+        ["Beta系数", f"{metrics.get('beta', 0):.2f}"],
+        ["Alpha", f"{metrics.get('alpha', 0):.2f}%"],
+        ["最大亏损金额", f"{metrics.get('max_loss_amount', 0):.2f}"],
+        ["最大亏损比例", f"{metrics.get('max_loss_pct', 0):.2f}%"],
+        ["总交易次数", str(metrics.get('total_trades', 0))],
+        ["胜率", f"{metrics.get('win_rate', 0):.2f}%"],
+        ["盈亏比", f"{metrics.get('profit_factor', 0):.2f}"],
+        ["Calmar比率", f"{metrics.get('calmar_ratio', 0):.2f}"],
+        ["VWR", f"{metrics.get('vwr', 0):.2f}"],
+        ["SQN", f"{metrics.get('sqn', 0):.2f}"],
+    ]
+
+    # 使用 tabulate 打印表格
+    logger.info("\n" + tabulate(
+        table_data,
+        headers=["指标", "值"],
+        tablefmt="simple",
+        colalign=("left", "right")
+    ))
+
+    # 打印交易时间范围
+    if metrics.get("start_date") and metrics.get("end_date"):
+        logger.info(SUBSECTION_SEPARATOR)
+        logger.info(
+            f"交易区间: {metrics['start_date'].strftime('%Y-%m-%d')} - "
+            f"{metrics['end_date'].strftime('%Y-%m-%d')}"
+        )
 
 
 def print_next_signal(next_signal: dict):
@@ -315,7 +350,7 @@ def print_best_results(results: Dict):
         logger.info(f"最大回撤: {best_return['max_drawdown']:.2f}%")
         logger.info(f"交易次数: {best_return['total_trades']}")
 
-    # 打印最小回撤的组合
+    # 打印最小回撤组合
     min_dd = results.get("min_drawdown")
     if min_dd:
         logger.info("\n=== 最小回撤组合 ===")
@@ -567,7 +602,7 @@ def format_for_json(
             {
                 "name": "运行天数",
                 "value": metrics["running_days"],
-                "description": "策略回测的总天数，反映样本期长度",
+                "description": "回测的总天数，反映样本期长度",
             },
             {
                 "name": "开始日期",
@@ -675,3 +710,87 @@ def format_for_json(
         result["positionInfo"] = None
 
     return result
+
+
+def export_results_to_csv(combinations: List[Dict], output_file: str):
+    """将回测结果导出为CSV文件"""
+    # 准备数据列表
+    data = []
+    for result in combinations:
+        metrics = result.get("full_result", {}).get("metrics", {})
+        params = result.get("params", {})
+        
+        # 构建单行数据
+        row = {
+            # 策略参数
+            "短期均线周期": params.get("short_period"),
+            "长期均线周期": params.get("long_period"),
+            "吊灯周期": params.get("chandelier_period"),
+            "吊灯乘数": params.get("chandelier_multiplier"),
+            "ADR周期": params.get("adr_period"),
+            "ADR乘数": params.get("adr_multiplier"),
+            
+            # 收益指标
+            "年化收益率(%)": metrics.get("annual_return"),
+            "总盈亏(元)": metrics.get("total_pnl"),
+            "复合年化收益率(%)": metrics.get("cagr"),
+            
+            # 风险指标
+            "最大回撤(%)": metrics.get("max_drawdown"),
+            "波动率(%)": metrics.get("volatility"),
+            "Beta系数": metrics.get("beta"),
+            "Alpha(%)": metrics.get("alpha"),
+            "最大亏损金额(元)": metrics.get("max_loss_amount"),
+            "最大亏损比例(%)": metrics.get("max_loss_pct"),
+            
+            # 风险调整收益
+            "夏普比率": metrics.get("sharpe_ratio"),
+            "索提诺比率": metrics.get("sortino_ratio"),
+            "卡玛比率": metrics.get("calmar_ratio"),
+            "VWR": metrics.get("vwr"),
+            "SQN": metrics.get("sqn"),
+            
+            # 交易统计
+            "总交易次数": metrics.get("total_trades"),
+            "胜率(%)": metrics.get("win_rate"),
+            "盈亏比": metrics.get("profit_factor"),
+            "平均盈利(元)": metrics.get("avg_won"),
+            "平均亏损(元)": metrics.get("avg_lost"),
+            "最大连续盈利次数": metrics.get("max_consecutive_wins"),
+            "最大连续亏损次数": metrics.get("max_consecutive_losses"),
+            
+            # 时间统计
+            "开始日期": metrics.get("start_date").strftime("%Y-%m-%d") if metrics.get("start_date") else None,
+            "结束日期": metrics.get("end_date").strftime("%Y-%m-%d") if metrics.get("end_date") else None,
+            "运行天数": metrics.get("running_days"),
+        }
+        data.append(row)
+    
+    # 创建DataFrame并保存为CSV
+    df = pd.DataFrame(data)
+    
+    # 设置列的显示顺序
+    columns_order = [
+        # 策略参数
+        "短期均线周期", "长期均线周期", "吊灯周期", "吊灯乘数", "ADR周期", "ADR乘数",
+        # 收益指标
+        "年化收益率(%)", "总盈亏(元)", "复合年化收益率(%)",
+        # 风险指标
+        "最大回撤(%)", "波动率(%)", "Beta系数", "Alpha(%)", 
+        "最大亏损金额(元)", "最大亏损比例(%)",
+        # 风险调整收益
+        "夏普比率", "索提诺比率", "卡玛比率", "VWR", "SQN",
+        # 交易统计
+        "总交易次数", "胜率(%)", "盈亏比", 
+        "平均盈利(元)", "平均亏损(元)", 
+        "最大连续盈利次数", "最大连续亏损次数",
+        # 时间统计
+        "开始日期", "结束日期", "运行天数"
+    ]
+    
+    # 按指定顺序重排列列
+    df = df[columns_order]
+    
+    # 保存为CSV，使用UTF-8编码
+    df.to_csv(output_file, index=False, float_format="%.4f", encoding='utf-8')
+    logger.info(f"回测结果已保存到CSV文件: {output_file}")

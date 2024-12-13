@@ -29,6 +29,7 @@ from utils import (
     get_stock_name,
     format_params_string,
     format_for_json,
+    export_results_to_csv,
 )
 
 logger.remove()  # 移除默认的处理器
@@ -961,28 +962,35 @@ class BacktestRunner:
             logger.error("所有参数组合回测都失败了")
             return {"combinations": [], "best_annual_return": None}
 
-        sorted_by_annual_return = sorted(
-            valid_results,
-            key=lambda x: x["annual_return"],
-            reverse=True
-        )
-
-        sorted_by_drawdown = sorted(
-            valid_results,
-            key=lambda x: x["max_drawdown"]
-        )
-
-        sorted_by_sharpe = sorted(
-            valid_results,
-            key=lambda x: x["full_result"]["metrics"]["sharpe_ratio"],
-            reverse=True
-        )
+        # 按不同指标排序
+        sorted_results = {
+            "by_annual_return": sorted(
+                valid_results,
+                key=lambda x: x["annual_return"],
+                reverse=True
+            ),
+            "by_sharpe": sorted(
+                valid_results,
+                key=lambda x: x["full_result"]["metrics"]["sharpe_ratio"],
+                reverse=True
+            ),
+            "by_drawdown": sorted(
+                valid_results,
+                key=lambda x: x["max_drawdown"]
+            ),
+            "by_calmar": sorted(
+                valid_results,
+                key=lambda x: x["full_result"]["metrics"]["calmar_ratio"],
+                reverse=True
+            ),
+        }
 
         return {
-            "combinations": sorted_by_annual_return,
-            "best_annual_return": sorted_by_annual_return[0] if sorted_by_annual_return else None,
-            "min_drawdown": sorted_by_drawdown[0] if sorted_by_drawdown else None,
-            "best_sharpe": sorted_by_sharpe[0] if sorted_by_sharpe else None,
+            "combinations": sorted_results["by_annual_return"],
+            "best_annual_return": sorted_results["by_annual_return"][0] if sorted_results["by_annual_return"] else None,
+            "best_sharpe": sorted_results["by_sharpe"][0] if sorted_results["by_sharpe"] else None,
+            "min_drawdown": sorted_results["by_drawdown"][0] if sorted_results["by_drawdown"] else None,
+            "best_calmar": sorted_results["by_calmar"][0] if sorted_results["by_calmar"] else None,
         }
 
     @staticmethod
@@ -1232,7 +1240,7 @@ def main():
     )
 
     # 添加调试开关
-    # parser.add_argument("--debug", action="store_true", help="启用调试日志")
+    parser.add_argument("--debug", action="store_true", help="启用调试日志")
 
     # 添加输出JSON参数
     parser.add_argument("--output-json", type=str, help="输出结果到指定的JSON文件")
@@ -1249,6 +1257,14 @@ def main():
         type=float,
         default=0.03,
         help="无风险利率，用于计算Alpha，默认为3%"
+    )
+
+    # 添加CSV输出参数
+    parser.add_argument(
+        "--output-csv",
+        type=str,
+        default="backtest_results.csv",
+        help="输出回测结果到CSV文件（默认: backtest_results.csv）"
     )
 
     args = parser.parse_args()
@@ -1327,24 +1343,31 @@ def main():
             max_workers=args.workers,  # 添加这个参数
         )
 
+        # 输出CSV文件
+        export_results_to_csv(results["combinations"], args.output_csv)
+
         # 为每个参数组合打印详细结果
-        for idx, result in enumerate(results["combinations"], 1):
-            logger.info(f"\n\n{'='*20} 参数组合 {idx} {'='*20}")
-            logger.info(f"参数: {format_params_string(result['params'])}")
+        
+        # 如果开了调试模式再输出
+        if args.debug:
+            logger.info("调试模式开启，输出所有参数组合结果")
+            for idx, result in enumerate(results["combinations"], 1):
+                logger.info(f"\n\n{'='*20} 参数组合 {idx} {'='*20}")
+                logger.info(f"参数: {format_params_string(result['params'])}")
 
-            full_result = result["full_result"]
-            metrics = full_result["metrics"]
+                full_result = result["full_result"]
+                metrics = full_result["metrics"]
 
-            print_metrics(metrics)
-            print_combination_result(idx, result)
-            print_next_signal(full_result["next_signal"])
-            print_trades(full_result["all_trades"])
+                print_metrics(metrics)
+                print_combination_result(idx, result)
+                print_next_signal(full_result["next_signal"]) 
+                print_trades(full_result["all_trades"]) 
 
-            logger.info("\n" + "=" * 50)  # 分隔线
+                logger.info("\n" + "=" * 50)  # 分隔线
 
-        # 打印汇总信息
-        print_parameter_summary(results["combinations"])
-        print_best_results(results)
+            # 打印汇总信息
+            print_parameter_summary(results["combinations"])
+            print_best_results(results)
 
         # 如果需要通知，使用最佳年化收益率的结果
         if args.notify:
