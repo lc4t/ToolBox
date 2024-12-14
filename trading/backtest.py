@@ -295,7 +295,7 @@ class DualMAStrategy(bt.Strategy):
                 )
 
         elif order.status in [order.Canceled, order.Margin, order.Rejected]:
-            logger.warning(f"Order Failed - Status: {order.status}")
+            logger.warning(f"Order Failed - Status: {order.status} - Reason: {order.getstatusname()} Time: {self.data.datetime.datetime()}") 
 
         self.order = None
 
@@ -918,7 +918,11 @@ class BacktestRunner:
                 values = [int(v) for v in values]
             param_combinations.append([(param_name, v) for v in values])
 
-        all_combinations = list(product(*param_combinations))
+        all_combinations = []
+        for combo in product(*param_combinations):
+            if combo[0][1] < combo[1][1]:
+                all_combinations.append(combo)
+
         total_combinations = len(all_combinations)
 
         # 设置默认进程数
@@ -1355,6 +1359,18 @@ def main():
             param_ranges=param_ranges,
             max_workers=args.workers,  # 添加这个参数
         )
+
+        export_results_to_csv(results["combinations"], args.output_csv)
+
+        if not args.debug:
+            # 移除交易次数为0的
+            # 移除年化收益率<0%的
+            results["combinations"] = [
+                result
+                for result in results["combinations"]
+                if result["full_result"]["metrics"]["transactions"] > 0
+                and result["full_result"]["metrics"]["annual_return"] > 0
+            ]
 
         # 输出CSV文件
         export_results_to_csv(results["combinations"], args.output_csv)
