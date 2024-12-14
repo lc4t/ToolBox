@@ -1362,15 +1362,15 @@ def main():
 
         export_results_to_csv(results["combinations"], args.output_csv)
 
-        if not args.debug:
-            # 移除交易次数为0的
-            # 移除年化收益率<0%的
-            results["combinations"] = [
-                result
-                for result in results["combinations"]
-                if result["full_result"]["metrics"]["transactions"] > 0
-                and result["full_result"]["metrics"]["annual_return"] > 0
-            ]
+        # if not args.debug:
+        #     # 移除交易次数为0的
+        #     # 移除年化收益率<0%的
+        #     results["combinations"] = [
+        #         result
+        #         for result in results["combinations"]
+        #         if result["full_result"]["metrics"]["total_trades"] > 0
+        #         and result["full_result"]["metrics"]["annual_return"] > 0
+        #     ]
 
         # 输出CSV文件
         export_results_to_csv(results["combinations"], args.output_csv)
