@@ -1373,7 +1373,7 @@ def main():
         #     ]
 
         # 输出CSV文件
-        export_results_to_csv(results["combinations"], args.output_csv)
+        # export_results_to_csv(results["combinations"], args.output_csv)
 
         # 为每个参数组合打印详细结果
         
