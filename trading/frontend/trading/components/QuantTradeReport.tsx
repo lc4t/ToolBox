@@ -116,22 +116,22 @@ export default function QuantTradeReport({
 
       <AnnualReturnsSection returns={annualReturns} />
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        <MetricsSection title="收益指标" metrics={returnMetrics} symbol={symbol} />
-        <MetricsSection title="风险指标" metrics={riskMetrics} symbol={symbol} />
-        <MetricsSection title="风险调整收益" metrics={riskAdjustedMetrics} symbol={symbol} />
+        <MetricsSection title="收益指标" metrics={returnMetrics} />
+        <MetricsSection title="风险指标" metrics={riskMetrics} />
+        <MetricsSection title="风险调整收益" metrics={riskAdjustedMetrics} />
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        <MetricsSection title="交易统计" metrics={tradingMetrics} symbol={symbol} />
-        <MetricsSection title="持仓特征" metrics={positionMetrics} symbol={symbol} />
-        <MetricsSection title="时间统计" metrics={timeMetrics} symbol={symbol} />
+        <MetricsSection title="交易统计" metrics={tradingMetrics} />
+        <MetricsSection title="持仓特征" metrics={positionMetrics} />
+        <MetricsSection title="时间统计" metrics={timeMetrics} />
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <MetricsSection title="基准对比" metrics={benchmarkMetrics} symbol={symbol} />
+        <MetricsSection title="基准对比" metrics={benchmarkMetrics} />
       </div>
 
-      <RecentTradesSection trades={recentTrades} symbol={symbol} />
+      <RecentTradesSection trades={recentTrades} />
       <StrategyParametersSection parameters={strategyParameters} show={showStrategyParameters} />
     </div>
   );
@@ -314,7 +314,7 @@ function AnnualReturnsSection({ returns }: { returns: { year: number; value: num
   );
 }
 
-function MetricsSection({ title, metrics, symbol }: { title: string; metrics: Metric[]; symbol: string }) {
+function MetricsSection({ title, metrics }: { title: string; metrics: Metric[] }) {
   const formatValue = (metric: Metric) => {
     const value = metric.value;
 
@@ -324,11 +324,12 @@ function MetricsSection({ title, metrics, symbol }: { title: string; metrics: Me
 
     const percentageMetrics = [
       '年化收益率', '复合年化收益', 'Alpha', '最大回撤', '当前回撤',
-      '波动率', '胜率', '持仓比例'
+      '波动率', '胜率', '持仓比例', '最大亏损比例'
     ];
 
     const moneyMetrics = [
-      '总盈亏', '平均盈利', '平均亏损', '最大亏损'
+      '总盈亏', '平均盈利', '平均亏损', '最大亏损金额', 'VaR (95%置信度)',
+      '成交额'
     ];
 
     const ratioMetrics = [
@@ -348,7 +349,7 @@ function MetricsSection({ title, metrics, symbol }: { title: string; metrics: Me
       if (percentageMetrics.includes(metric.name)) {
         return `${value.toFixed(2)}%`;
       } else if (moneyMetrics.includes(metric.name)) {
-        return formatMoney(value, symbol);
+        return `¥${value.toFixed(2)}`;
       } else if (ratioMetrics.includes(metric.name)) {
         return value.toFixed(2);
       } else if (countMetrics.includes(metric.name)) {
@@ -391,7 +392,7 @@ function MetricsSection({ title, metrics, symbol }: { title: string; metrics: Me
   );
 }
 
-function RecentTradesSection({ trades, symbol }: { trades: Trade[]; symbol: string }) {
+function RecentTradesSection({ trades }: { trades: Trade[] }) {
   const [showAllTrades, setShowAllTrades] = useState(false);
   const [sortConfig, setSortConfig] = useState<{
     key: keyof Trade;
@@ -443,10 +444,11 @@ function RecentTradesSection({ trades, symbol }: { trades: Trade[]; symbol: stri
   const formatProfitLoss = (trade: Trade) => {
     if (trade.action !== 'SELL') return '—';
 
-    const pnlText = formatMoney(trade.profitLoss, symbol);
+    const profitLoss = trade.profitLoss;
+    const pnlText = `¥${profitLoss.toFixed(2)}`;
     const pnlPercentage = trade.profitLossPercentage;
 
-    const className = trade.profitLoss >= 0 ? 'text-green-600' : 'text-red-600';
+    const className = profitLoss >= 0 ? 'text-green-600' : 'text-red-600';
 
     return (
       <div className={className}>
@@ -510,23 +512,17 @@ function RecentTradesSection({ trades, symbol }: { trades: Trade[]; symbol: stri
                     </Badge>
                   </TableCell>
                   <TableCell>
-                    ¥{trade.price.toFixed(3)}
+                    ¥{trade.price.toFixed(2)}
                     {trade.action === 'SELL' && trade.entryPrice && (
                       <div className="text-xs text-muted-foreground">
-                        买入: ¥{trade.entryPrice.toFixed(3)}
+                        买入: ¥{trade.entryPrice.toFixed(2)}
                       </div>
                     )}
                   </TableCell>
                   <TableCell>{trade.quantity.toLocaleString()}</TableCell>
-                  <TableCell>
-                    {formatMoney(trade.value, symbol)}
-                  </TableCell>
-                  <TableCell>
-                    {formatProfitLoss(trade)}
-                  </TableCell>
-                  <TableCell>
-                    {formatMoney(trade.totalValue, symbol)}
-                  </TableCell>
+                  <TableCell>¥{trade.value.toFixed(2)}</TableCell>
+                  <TableCell>{formatProfitLoss(trade)}</TableCell>
+                  <TableCell>¥{trade.totalValue.toFixed(2)}</TableCell>
                   <TableCell className="max-w-md truncate" title={trade.reason}>
                     {trade.reason}
                   </TableCell>
@@ -572,4 +568,3 @@ function StrategyParametersSection({ parameters, show }: { parameters: StrategyP
     </Card>
   );
 }
-
