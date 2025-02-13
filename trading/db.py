@@ -52,6 +52,9 @@ class TradingData(Base):
     high = Column(DECIMAL(20, STORAGE_SCALE), nullable=False)
     low = Column(DECIMAL(20, STORAGE_SCALE), nullable=False)
     volume = Column(BigInteger, nullable=False)
+    amount = Column(DECIMAL(20, STORAGE_SCALE), nullable=True)
+    change = Column(DECIMAL(20, STORAGE_SCALE), nullable=True)
+    change_pct = Column(DECIMAL(20, STORAGE_SCALE), nullable=True)
     create_time = Column(
         DATETIME, nullable=False, default=datetime.now, comment="创建时间"
     )
@@ -291,6 +294,9 @@ class DBClient:
                     "low": stmt.inserted.low,
                     "volume": stmt.inserted.volume,
                     "update_time": datetime.now(),
+                    "amount": stmt.inserted.amount,
+                    "change": stmt.inserted.change,
+                    "change_pct": stmt.inserted.change_pct,
                 }
                 stmt = stmt.on_duplicate_key_update(**update_dict)
 
