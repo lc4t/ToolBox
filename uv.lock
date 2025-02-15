@@ -23,6 +23,15 @@ wheels = [
 ]
 
 [[package]]
+name = "akracer"
+version = "0.0.13"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/b7/76/424358add4fb060ab24c7a4d6e90c5c05cc1871cf27b6afc3f39ff5774fe/akracer-0.0.13.tar.gz", hash = "sha256:8ab67dabda34f38604d037f2cac67078d253d8c4c316ffe0d80d27ed03cdbb5e", size = 10047445 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/15/86/6ef05f0b51a36dbec2b260da7a93ed0096dea32e708e127c5051b875af2d/akracer-0.0.13-py3-none-any.whl", hash = "sha256:55bd04c69e35130994d26795f00183e0c33d4e237f7ebfa35074a760c30209d1", size = 10078023 },
+]
+
+[[package]]
 name = "anyio"
 version = "4.5.2"
 source = { registry = "https://pypi.org/simple" }
@@ -1405,6 +1414,7 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "adata" },
+    { name = "akracer" },
     { name = "backtrader" },
     { name = "feedparser" },
     { name = "jinja2" },
@@ -1428,6 +1438,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "adata", specifier = ">=2.8.2" },
+    { name = "akracer", specifier = ">=0.0.13" },
     { name = "backtrader", specifier = ">=1.9.78.123" },
     { name = "feedparser", specifier = ">=6.0.11" },
     { name = "jinja2", specifier = ">=3.1.4" },
