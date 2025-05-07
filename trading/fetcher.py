@@ -171,7 +171,7 @@ class ADataFetcher(DataFetcher):
 
 
 class StockDataManager:
-    def __init__(self, max_workers: int = 5, max_retries: int = 3):
+    def __init__(self, max_workers: int = 1, max_retries: int = 5):
         self.db_client = DBClient()
         self.max_workers = max_workers
         self.max_retries = max_retries
