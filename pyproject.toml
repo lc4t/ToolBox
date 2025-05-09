@@ -3,7 +3,7 @@ name = "toolbox"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.13"
 dependencies = [
     "adata>=2.8.2",
     "akracer>=0.0.13",
@@ -26,3 +26,6 @@ dependencies = [
     "tqdm>=4.67.0",
     "yfinance>=0.2.48",
 ]
+
+[tool.uv.workspace]
+members = ["trading"]
