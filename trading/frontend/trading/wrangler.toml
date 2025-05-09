@@ -1,0 +1,13 @@
+name = "trading"
+compatibility_date = "2024-01-01"
+
+[site]
+bucket = "./out"
+
+[build]
+command = "yarn build"
+
+[dev]
+ip = "localhost"
+port = 8787
+local_protocol = "http"

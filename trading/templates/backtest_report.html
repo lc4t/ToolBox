@@ -1,0 +1,716 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <meta charset="UTF-8">
+        <style>
+        /* 基础样式 */
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f8f9fa;
+        }
+        
+        /* 容器样式 */
+        .container {
+            background-color: white;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            padding: 30px;
+            margin-bottom: 30px;
+        }
+        
+        /* 标题区域 */
+        .header {
+            background: linear-gradient(135deg, #1a73e8, #0d47a1);
+            color: white;
+            padding: 20px 30px;
+            border-radius: 10px;
+            margin: -30px -30px 30px -30px;
+        }
+        
+        /* 数据卡片网格 */
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 12px;
+            margin: 20px 0;
+        }
+        
+        /* 数据卡片 */
+        .metric-card {
+            background-color: #fff;
+            padding: 12px 16px;
+            border-radius: 10px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+            border: 1px solid #e9ecef;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            min-height: 90px;
+        }
+        
+        .metric-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+        }
+        
+        /* 表格样式 */
+        table {
+            width: 100%;
+            border-collapse: separate;
+            border-spacing: 0;
+            margin: 20px 0;
+            background: white;
+        }
+        
+        th {
+            background-color: #f8f9fa;
+            padding: 8px 12px;
+            font-weight: 600;
+            color: #1a73e8;
+            text-align: left;
+            border-bottom: 2px solid #e9ecef;
+            line-height: 1.3;
+        }
+        
+        td {
+            padding: 8px 12px;
+            border-bottom: 1px solid #e9ecef;
+            vertical-align: middle;
+            line-height: 1.3;
+        }
+        
+        /* 数值对齐 */
+        td:nth-child(3), /* 价格 */
+        td:nth-child(4), /* 数量 */
+        td:nth-child(5), /* 交易金额 */
+        td:nth-child(6), /* 手续费 */
+        td:nth-child(7), /* 盈亏 */
+        td:nth-child(8)  /* 总资产 */ {
+            text-align: right;
+        }
+        
+        /* 标签样式 */
+        .metric-label {
+            font-size: 0.9em;
+            color: #666;
+            font-weight: 500;
+            margin-bottom: 2px;
+        }
+        
+        /* 数值样式 */
+        .metric-value {
+            font-size: 1.2em;
+            font-weight: 600;
+            color: #333;
+            margin: 2px 0;
+            line-height: 1.1;
+        }
+        
+        /* 描述文字样式 */
+        .metric-description {
+            font-size: 0.85em;
+            color: #666;
+            line-height: 1.3;
+            margin-top: 4px;
+            padding-top: 4px;
+            border-top: 1px solid #eee;
+        }
+        
+        /* 正负值颜色 */
+        .positive {
+            color: #2e7d32;
+        }
+        
+        .negative {
+            color: #c62828;
+        }
+        
+        /* 响应式调整 */
+        @media (max-width: 768px) {
+            body {
+                padding: 10px;
+            }
+            
+            .container {
+                padding: 15px;
+            }
+            
+            .header {
+                padding: 15px;
+                margin: -15px -15px 20px -15px;
+            }
+            
+            .metrics-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            th, td {
+                padding: 10px;
+            }
+        }
+        
+        .tooltip {
+            display: none;
+            position: absolute;
+            background: #333;
+            color: white;
+            padding: 10px;
+            border-radius: 6px;
+            font-size: 0.8em;
+            max-width: 250px;
+            z-index: 100;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+        }
+        
+        .metric-label {
+            position: relative;
+            cursor: help;
+        }
+        
+        .metric-label:hover .tooltip {
+            display: block;
+        }
+        
+        /* 添加指标描述的样式 */
+        .metric-description {
+            font-size: 0.8em;
+            color: #666;
+            margin-top: 4px;
+            line-height: 1.4;
+        }
+        
+        /* 调整卡片内部布局 */
+        .metric-card {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        
+        .metric-value {
+            font-size: 1.2em;
+            font-weight: 600;
+        }
+        
+        /* 分区标题样式 */
+        .section-title {
+            font-size: 1.2em;
+            font-weight: 600;
+            color: #1a73e8;
+            margin: 20px 0 10px 0;
+            padding-bottom: 6px;
+            border-bottom: 2px solid #e9ecef;
+        }
+        
+        /* 信号标签样式优化 */
+        .signal {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-weight: 600;
+            font-size: 0.9em;
+            text-transform: uppercase;
+            line-height: 1.2;
+        }
+        
+        .signal-buy {
+            background-color: #e8f5e9;
+            color: #2e7d32;
+        }
+        
+        .signal-sell {
+            background-color: #ffebee;
+            color: #c62828;
+        }
+        
+        .signal-observe {
+            background-color: #fff3e0;
+            color: #ef6c00;
+        }
+        
+        .metric-description {
+            font-size: 0.85em;
+            color: #666;
+            line-height: 1.5;
+            margin-top: 8px;
+            padding-top: 8px;
+            border-top: 1px solid #eee;
+        }
+        
+        .metric-card {
+            display: flex;
+            flex-direction: column;
+            padding: 16px;
+            height: auto;
+            min-height: 120px;
+        }
+        
+        .metric-value {
+            font-size: 1.2em;
+            font-weight: 600;
+            margin: 8px 0;
+        }
+        
+        .position-info {
+            font-size: 0.9em;
+            line-height: 1.4;
+        }
+        
+        .position-info > div {
+            display: flex;
+            justify-content: space-between;
+            margin: 4px 0;
+            padding: 2px 0;
+        }
+        
+        .position-info .label {
+            color: #666;
+            flex: 0 0 80px; /* 固定宽度 */
+            text-align: right;
+            padding-right: 12px;
+        }
+        
+        .position-info .value {
+            flex: 1;
+            text-align: left;
+        }
+        
+        .stop-loss-info {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+        
+        .stop-loss-info .value {
+            font-size: 1.1em;
+            font-weight: 600;
+        }
+        
+        .stop-loss-info .distance {
+            font-size: 0.9em;
+            color: #666;
+        }
+        
+        .basic-info-card {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        
+        .basic-info-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .basic-info-label {
+            color: #666;
+        }
+        
+        .basic-info-value {
+            font-weight: 600;
+        }
+    </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <h2>【{{ result.next_signal.action }}】{{
+                    result.symbol_info.get('name', '') }}({{ result.symbol }}) -
+                    {{ result.end_date.strftime('%Y-%m-%d') }}</h2>
+                <p>{{ result.start_date.strftime('%Y-%m-%d') }} 至 {{
+                    result.end_date.strftime('%Y-%m-%d') }}</p>
+            </div>
+
+            <div class="section">
+                <div class="section-title">最新信号</div>
+                <table>
+                    <tr>
+                        <th width="20%">指标</th>
+                        <th>值</th>
+                        <th>说明</th>
+                    </tr>
+                    <tr>
+                        <td>操作建议</td>
+                        <td>
+                            <span
+                                class="signal {{ 'signal-buy' if result.next_signal.action == '买入' else 'signal-sell' if result.next_signal.action == '卖出' else 'signal-observe' }}">
+                                {{ result.next_signal.action }}
+                            </span>
+                        </td>
+                        <td>
+                            {% if result.next_signal.conditions %}
+                            触发条件：
+                            <ul style="margin: 5px 0; padding-left: 20px;">
+                                {% for condition in
+                                result.next_signal.conditions %}
+                                <li>{{ condition }}</li>
+                                {% endfor %}
+                            </ul>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% if result.next_signal.position_info %}
+                    <tr>
+                        <td>当前持仓</td>
+                        <td colspan="2">
+                            <div
+                                style="display: grid; grid-template-columns: auto 1fr; gap: 8px;">
+                                <span>买入日期:</span>
+                                <span>{{
+                                    result.next_signal.position_info.entry_date
+                                    }}</span>
+                                <span>买入价格:</span>
+                                <span>{{
+                                    "{:.3f}".format(result.next_signal.position_info.entry_price)
+                                    }}</span>
+                                <span>持仓成本:</span>
+                                <span>{{
+                                    "{:,.2f}".format(result.next_signal.position_info.cost)
+                                    }}</span>
+                                <span>当前价格:</span>
+                                <span>{{
+                                    "{:.3f}".format(result.next_signal.position_info.current_price)
+                                    }}</span>
+                                <span>浮动盈亏:</span>
+                                <span>{{
+                                    "{:+,.2f}".format(result.next_signal.position_info.unrealized_pnl)
+                                    }}
+                                    ({{
+                                    "{:+.2f}%".format(result.next_signal.position_info.unrealized_pnl_pct)
+                                    }})</span>
+                            </div>
+                        </td>
+                    </tr>
+                    {% endif %}
+                    {% if result.next_signal.stop_loss %}
+                    <tr>
+                        <td>止损信息</td>
+                        <td>{{ result.next_signal.stop_loss.type }}: {{
+                            "{:.3f}".format(result.next_signal.stop_loss.price)
+                            }}</td>
+                        <td>距离当前价: {{
+                            "{:.2f}%".format(result.next_signal.stop_loss.distance_pct)
+                            }}</td>
+                    </tr>
+                    {% endif %}
+                </table>
+            </div>
+
+            <div class="section">
+                <div class="section-title">基本信息</div>
+                <table>
+                    <tr>
+                        <th width="20%">指标</th>
+                        <th>值</th>
+                        <th>说明</th>
+                    </tr>
+                    <tr>
+                        <td>初始资金</td>
+                        <td>¥{{ "{:,.2f}".format(result.initial_capital) }}</td>
+                        <td>策略起始资金</td>
+                    </tr>
+                    <tr>
+                        <td>最终权益</td>
+                        <td>¥{{ "{:,.2f}".format(result.final_value) }}</td>
+                        <td>当前总资产</td>
+                    </tr>
+                    <tr>
+                        <td>总收益率</td>
+                        <td
+                            class="{{ 'positive' if result.total_return > 0 else 'negative' }}">
+                            {{ "{:+.2f}%".format(result.total_return) }}
+                        </td>
+                        <td>累计收益率</td>
+                    </tr>
+                </table>
+            </div>
+            <div class="section">
+                <div class="section-title">年度收益率</div>
+                <table>
+                    <tr>
+                        <th width="20%">年份</th>
+                        <th>收益率</th>
+                        <th>说明</th>
+                    </tr>
+                    {% for year, return_rate in
+                    result.metrics.yearly_returns.items()|sort %}
+                    <tr>
+                        <td>{{ year }}年</td>
+                        <td
+                            class="{{ 'positive' if return_rate > 0 else 'negative' }}">
+                            {{ "{:+.2f}%".format(return_rate) }}
+                        </td>
+                        <td>{{ year }}年度的累计收益率</td>
+                    </tr>
+                    {% endfor %}
+                </table>
+            </div>
+            <div class="section">
+                <div class="section-title">性能指标</div>
+                <table>
+                    <tr>
+                        <th width="20%">指标</th>
+                        <th>值</th>
+                        <th>说明</th>
+                    </tr>
+                    <tr>
+                        <td>夏普比率</td>
+                        <td>{{
+                            "{:.2f}".format(result.metrics.get('sharpe_ratio',
+                            0)) }}</td>
+                        <td>衡量投资组合的超额回报与风险的比率。大于1表现优秀，小于0表现不佳。</td>
+                    </tr>
+                    <tr>
+                        <td>最大回撤</td>
+                        <td>{{
+                            "{:.2f}%".format(result.metrics.get('max_drawdown',
+                            0)) }}</td>
+                        <td>历史最大的净值回撤幅度。反映策略的风险承受能力，越小越好。</td>
+                    </tr>
+                    <tr>
+                        <td>总交易次数</td>
+                        <td>{{ result.metrics.get('total_trades', 0) }}</td>
+                        <td>策略执行期间的总交易次数。反映策略的交易频率。</td>
+                    </tr>
+                    <tr>
+                        <td>胜率</td>
+                        <td>{{ "{:.2f}%".format(result.metrics.get('win_rate',
+                            0)) }}</td>
+                        <td>盈利交易占总交易的比例。反映策略的稳定性。</td>
+                    </tr>
+                    <tr>
+                        <td>平均盈利</td>
+                        <td
+                            class="{{ 'positive' if result.metrics.get('avg_won', 0) > 0 else '' }}">
+                            {{ "{:.2f}".format(result.metrics.get('avg_won', 0))
+                            }}
+                        </td>
+                        <td>单次盈利交易的平均收益。反映策略的获利能力。</td>
+                    </tr>
+                    <tr>
+                        <td>平均亏损</td>
+                        <td
+                            class="{{ 'negative' if result.metrics.get('avg_lost', 0) < 0 else '' }}">
+                            {{ "{:.2f}".format(result.metrics.get('avg_lost',
+                            0)) }}
+                        </td>
+                        <td>单次亏损交易的平均损失。反映策略的风险控制能力。</td>
+                    </tr>
+                </table>
+            </div>
+
+            <div class="section">
+                <div class="section-title">风险指标</div>
+                <table>
+                    <tr>
+                        <th width="20%">指标</th>
+                        <th>值</th>
+                        <th>说明</th>
+                    </tr>
+                    <tr>
+                        <td>Calmar比率</td>
+                        <td>{{
+                            "{:.2f}".format(result.metrics.get('calmar_ratio',
+                            0)) }}</td>
+                        <td>年化收益率与最大回撤的比值，反映收益与风险的平衡。大于1表示表现良好。</td>
+                    </tr>
+                    <tr>
+                        <td>当前回撤</td>
+                        <td
+                            class="{{ 'negative' if result.metrics.get('current_drawdown', 0) < 0 else '' }}">
+                            {{
+                            "{:.2f}%".format(result.metrics.get('current_drawdown',
+                            0)) }}
+                        </td>
+                        <td>当前净值距离历史最高点的跌幅。</td>
+                    </tr>
+                    <tr>
+                        <td>最大回撤</td>
+                        <td>{{
+                            "{:.2f}%".format(result.metrics.get('max_drawdown',
+                            0)) }}</td>
+                        <td>历史最大的净值回撤幅度，反映策略的风险承受能力。越小越好。</td>
+                    </tr>
+                    <tr>
+                        <td>VWR指标</td>
+                        <td>{{ "{:.2f}".format(result.metrics.get('vwr', 0))
+                            }}</td>
+                        <td>波动率加权收益率，综合考虑收益和风险。通常大于5较好。</td>
+                    </tr>
+                    <tr>
+                        <td>SQN指标</td>
+                        <td>{{ "{:.2f}".format(result.metrics.get('sqn', 0))
+                            }}</td>
+                        <td>系统质量指数，衡量交易系统的稳定性。大于2表示良好，大于3表示优秀。</td>
+                    </tr>
+                </table>
+            </div>
+
+            <div class="section">
+                <div class="section-title">核心指标</div>
+                <table>
+                    <tr>
+                        <th width="20%">指标</th>
+                        <th>值</th>
+                        <th>说明</th>
+                    </tr>
+                    <tr>
+                        <td>年化收益率</td>
+                        <td
+                            class="{{ 'positive' if result.metrics.get('annual_return', 0) > 0 else 'negative' }}">
+                            {{
+                            "{:+.2f}%".format(result.metrics.get('annual_return',
+                            0)) }}
+                        </td>
+                        <td>将总收益率换算成年化收益率，便于与其他投资品比较。</td>
+                    </tr>
+                    <tr>
+                        <td>盈亏比</td>
+                        <td>{{
+                            "{:.2f}".format(result.metrics.get('profit_factor',
+                            0)) }}</td>
+                        <td>平均盈利与平均亏损的比值。通常大于2.0较好。</td>
+                    </tr>
+                    <tr>
+                        <td>最大连续盈利次数</td>
+                        <td>{{ result.metrics.max_consecutive_wins }}</td>
+                        <td>反映策略在顺势时的稳定性。</td>
+                    </tr>
+                    <tr>
+                        <td>最大连续亏损次数</td>
+                        <td>{{ result.metrics.max_consecutive_losses }}</td>
+                        <td>反映策略在逆势时的抗风险能力。</td>
+                    </tr>
+                    <tr>
+                        <td>平均持仓时间</td>
+                        <td>{{ result.metrics.avg_holding_period }}</td>
+                        <td>反映策略的持仓周期，与策略类型相关。</td>
+                    </tr>
+                    <tr>
+                        <td>最新净值</td>
+                        <td>{{ "{:.2f}".format(result.metrics.get('latest_nav',
+                            0)) }}</td>
+                        <td>当前策略净值，反映投资组合的当前价值。</td>
+                    </tr>
+                    <tr>
+                        <td>年复合收益率</td>
+                        <td
+                            class="{{ 'positive' if result.metrics.get('cagr', 0) > 0 else 'negative' }}">
+                            {{ "{:+.2f}%".format(result.metrics.get('cagr', 0))
+                            }}
+                        </td>
+                        <td>考虑复利效应的年化收益率，更准确反映长期收益能力。</td>
+                    </tr>
+                    <tr>
+                        <td>运行天数</td>
+                        <td>{{ result.metrics.get('running_days', 0) }}</td>
+                        <td>策略运行的总天数，反映策略的稳定性和可靠性。</td>
+                    </tr>
+                    <tr>
+                        <td>建仓日期</td>
+                        <td>
+                            {% if result.metrics.get('start_date') %}
+                            {% if result.metrics.get('start_date') is string %}
+                            {{ result.metrics.get('start_date') }}
+                            {% else %}
+                            {{
+                            result.metrics.get('start_date').strftime('%Y-%m-%d')
+                            }}
+                            {% endif %}
+                            {% else %}
+                            -
+                            {% endif %}
+                        </td>
+                        <td>策略开始运行的日期。</td>
+                    </tr>
+                    <tr>
+                        <td>更新日期</td>
+                        <td>
+                            {% if result.metrics.get('update_date') %}
+                            {% if result.metrics.get('update_date') is string %}
+                            {{ result.metrics.get('update_date') }}
+                            {% else %}
+                            {{
+                            result.metrics.get('update_date').strftime('%Y-%m-%d')
+                            }}
+                            {% endif %}
+                            {% else %}
+                            -
+                            {% endif %}
+                        </td>
+                        <td>最近一次更新数据的日期。</td>
+                    </tr>
+                    <tr>
+                        <td>持仓比例</td>
+                        <td>{{
+                            "{:.2f}%".format(result.metrics.get('holding_ratio',
+                            0)) }}</td>
+                        <td>持仓天数占总交易天数的比例，反映策略的仓位使用效率。</td>
+                    </tr>
+                </table>
+            </div>
+
+            <div class="section">
+                <div class="section-title">最近交易记录</div>
+                <table>
+                    <tr>
+                        <th>日期</th>
+                        <th>操作</th>
+                        <th>价格</th>
+                        <th>数量</th>
+                        <th>交易金额</th>
+                        <th>手续费</th>
+                        <th>盈亏</th>
+                        <th>总资产</th>
+                        <th>信号原因</th>
+                    </tr>
+                    {% for trade in result.trades[-20:] %}
+                    <tr>
+                        <td>{{ trade.date.strftime('%Y-%m-%d') if trade.date is
+                            not string else trade.date }}</td>
+                        <td>
+                            <span
+                                class="signal {{ 'signal-buy' if trade.action == 'BUY' else 'signal-sell' }}">
+                                {{ trade.action }}
+                            </span>
+                        </td>
+                        <td>{{ "{:.3f}".format(trade.price) }}</td>
+                        <td>{{ trade.size }}</td>
+                        <td>{{ "{:,.2f}".format(trade.value) }}</td>
+                        <td>{{ "{:.2f}".format(trade.commission) }}</td>
+                        <td
+                            class="{{ 'positive' if trade.pnl > 0 else 'negative' if trade.pnl < 0 else '' }}">
+                            {{ "{:+.2f}".format(trade.pnl) if trade.pnl != 0
+                            else "0.00" }}
+                        </td>
+                        <td>{{ "{:,.2f}".format(trade.total_value) }}</td>
+                        <td>{{ trade.signal_reason }}</td>
+                    </tr>
+                    {% endfor %}
+                </table>
+            </div>
+
+            <div class="section">
+                <div class="section-title">策略参数</div>
+                <table>
+                    <tr>
+                        <th>参数</th>
+                        <th>值</th>
+                    </tr>
+                    {% for key, value in result.strategy_params.items() %}
+                    <tr>
+                        <td>{{ key }}</td>
+                        <td>{{ value }}</td>
+                    </tr>
+                    {% endfor %}
+                </table>
+            </div>
+
+        </div>
+    </body>
+</html>
