@@ -186,6 +186,20 @@ class StockDataManager:
         self.yfinance_fetcher = YFinanceFetcher()
         self.adata_fetcher = ADataFetcher()
 
+    @staticmethod
+    def count_trading_days(start_date, end_date) -> int:
+        """
+        计算两个日期之间的工作日数量（使用 pandas 排除周末）
+        注意：不考虑节假日，只排除周六和周日
+        """
+        if start_date >= end_date:
+            return 0
+
+        # 使用 pandas 的 bdate_range 计算工作日（自动排除周末）
+        business_days = pd.bdate_range(start=start_date, end=end_date, freq='B')
+        # bdate_range 包含结束日期，我们需要排除它（因为我们计算的是"之间"的天数）
+        return len(business_days) - 1 if len(business_days) > 0 else 0
+
     @tenacity.retry(
         stop=tenacity.stop_after_attempt(3),
         wait=tenacity.wait_exponential(multiplier=1, min=4, max=10),
@@ -289,12 +303,25 @@ class StockDataManager:
                                 # 检查获取到的最新数据日期是否合理
                                 # 如果请求的结束日期是今天或未来，而获取到的数据日期稍早，这是正常的
                                 # （可能是还没开盘或数据还没更新）
-                                date_diff = (end_date - latest_record['date']).days
-                                if date_diff > 7:
-                                    # 如果数据超过7天没更新，可能有问题，记录警告但不标记为失败
-                                    logger.warning(
-                                        f"{symbol} 最新数据日期为 {latest_record['date']}，"
-                                        f"距离请求的结束日期 {end_date} 已有 {date_diff} 天"
+                                latest_data_date = latest_record['date']
+                                natural_days_diff = (end_date - latest_data_date).days
+                                trading_days_diff = self.count_trading_days(latest_data_date, end_date)
+
+                                if trading_days_diff > 2:
+                                    # 如果数据延迟超过2个交易日，视为失败
+                                    success = False
+                                    logger.error(
+                                        f"{symbol} 数据过旧：最新数据日期为 {latest_data_date}，"
+                                        f"距离请求的结束日期 {end_date} 已有 {trading_days_diff} 个交易日"
+                                        f"（自然日：{natural_days_diff} 天）"
+                                    )
+                                elif trading_days_diff > 0:
+                                    # 如果数据延迟在1-2个交易日内，记录信息但不视为失败
+                                    logger.info(
+                                        f"{symbol} 最新数据日期为 {latest_data_date}，"
+                                        f"距离请求的结束日期 {end_date} 有 {trading_days_diff} 个交易日"
+                                        f"（自然日：{natural_days_diff} 天），"
+                                        f"可能是还没开盘或数据未更新"
                                     )
 
                                 if not self.db_client.upsert_trading_data(data):
@@ -376,7 +403,7 @@ def main():
     if overall_success:
         logger.info("所有数据更新完成")
     else:
-        logger.warning("部分数据更新失败")
+        logger.error("部分数据更新失败")
         exit(1)
 
 
