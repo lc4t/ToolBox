@@ -286,6 +286,17 @@ class StockDataManager:
                                     f"Volume: {latest_record['volume']:,}"
                                 )
 
+                                # 检查获取到的最新数据日期是否合理
+                                # 如果请求的结束日期是今天或未来，而获取到的数据日期稍早，这是正常的
+                                # （可能是还没开盘或数据还没更新）
+                                date_diff = (end_date - latest_record['date']).days
+                                if date_diff > 7:
+                                    # 如果数据超过7天没更新，可能有问题，记录警告但不标记为失败
+                                    logger.warning(
+                                        f"{symbol} 最新数据日期为 {latest_record['date']}，"
+                                        f"距离请求的结束日期 {end_date} 已有 {date_diff} 天"
+                                    )
+
                                 if not self.db_client.upsert_trading_data(data):
                                     success = False
                                     logger.error(f"Failed to save data for {symbol}")
