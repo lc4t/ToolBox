@@ -1,4 +1,4 @@
-FROM python:3.10-slim
+FROM python:3.13-slim
 
 WORKDIR /app
 
@@ -13,7 +13,7 @@ RUN apt-get update && apt-get install -y curl && \
 RUN pip install --upgrade pip && \
     pip install uv
 
-RUN cd /app/trading && uv sync
+RUN cd /app && uv sync
 
 RUN cd /app/trading/frontend/trading && \
     npm install yarn -g && \
