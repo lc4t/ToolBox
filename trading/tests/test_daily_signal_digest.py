@@ -28,6 +28,30 @@ def make_report(symbol: str, name: str, report_date: str, action: str, **overrid
     return report
 
 
+def make_rotation_report(strategy_id: str, strategy_name: str, report_date: str, **overrides):
+    report = {
+        "schemaVersion": "rotation-v1",
+        "strategyId": strategy_id,
+        "strategyName": strategy_name,
+        "reportDate": report_date,
+        "currentHolding": {
+            "symbol": "159915.SZ",
+            "name": "159915.SZ",
+            "since": "2026-07-21",
+            "entryPrice": 3.5,
+            "currentPrice": 3.6,
+            "unrealizedPnlPct": 2.86,
+        },
+        "nextSignal": {
+            "action": "HOLD",
+            "reason": "动量最强仍为 159915.SZ",
+        },
+        "rotations": [],
+    }
+    report.update(overrides)
+    return report
+
+
 class LoadReportsTests(unittest.TestCase):
     def test_load_reports_filters_today_and_skips_broken_files(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -62,6 +86,47 @@ class LoadReportsTests(unittest.TestCase):
             self.assertEqual(reports, [])
             self.assertEqual(warnings, [])
             self.assertEqual(reason, "no_matching_reports")
+
+
+class LoadRotationReportsTests(unittest.TestCase):
+    def test_load_rotation_reports_filters_today_and_skips_broken_files(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            rotation_dir = base / "rotation"
+            rotation_dir.mkdir()
+            today = date(2026, 7, 25)
+            (rotation_dir / "broken.json").write_text("{bad", encoding="utf-8")
+            (rotation_dir / "old.json").write_text(
+                json.dumps(make_rotation_report("momentum-top1", "动量轮动 Top-1", "2026-07-24")),
+                encoding="utf-8",
+            )
+            (rotation_dir / "today.json").write_text(
+                json.dumps(make_rotation_report("momentum-top1", "动量轮动 Top-1", "2026-07-25")),
+                encoding="utf-8",
+            )
+
+            reports, warnings = digest.load_rotation_reports(base, today)
+
+            self.assertEqual([r["strategyId"] for r in reports], ["momentum-top1"])
+            self.assertEqual(len(warnings), 1)
+
+    def test_load_rotation_reports_returns_empty_when_dir_missing(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            reports, warnings = digest.load_rotation_reports(Path(temp_dir), date(2026, 7, 25))
+
+            self.assertEqual(reports, [])
+            self.assertEqual(warnings, [])
+
+
+class FormatPnlLabelTests(unittest.TestCase):
+    def test_positive_value_is_labeled_as_profit(self):
+        self.assertEqual(digest.format_pnl_label(34.482), "浮盈34.48%")
+
+    def test_negative_value_is_labeled_as_loss(self):
+        self.assertEqual(digest.format_pnl_label(-3.2), "浮亏3.20%")
+
+    def test_none_returns_placeholder(self):
+        self.assertEqual(digest.format_pnl_label(None), "暂无")
 
 
 class BuildDigestTests(unittest.TestCase):
@@ -138,13 +203,26 @@ class BuildDigestTests(unittest.TestCase):
 
         title, body = digest.build_digest(reports, target_date)
 
-        self.assertEqual(title, "[2026-03-10] 2个交易信号")
-        self.assertIn("## [000001.SZ][买入标的] - [买入]", body)
+        self.assertEqual(title, "📊 [2026-03-10] 2个交易信号")
+        self.assertIn("## 🎯 信号总览", body)
+        self.assertIn("🟢 买入标的（000001.SZ）买入", body)
+        self.assertIn("🔴 卖出标的（000002.SZ）卖出", body)
+        self.assertIn("🟡 持有标的（000003.SZ）持有 浮盈7.89%", body)
+        self.assertIn("⚪ 观望标的（000004.SZ）空仓", body)
+
+        self.assertIn("### 🟢 买入标的（000001.SZ）· 买入", body)
         self.assertIn("买入信号：2026-03-10 09:30:00，价格：10.123", body)
+
+        self.assertIn("### 🔴 卖出标的（000002.SZ）· 卖出", body)
         self.assertIn("买入信号：2026-03-01 09:30:00，价格：9.876", body)
         self.assertIn("卖出信号：2026-03-10 09:30:00，价格：11.321", body)
         self.assertIn("触发条件：MA交叉卖出 [MA5=10.1 < MA20=10.5]", body)
-        self.assertIn("当前持仓买入信号：2026-03-03 09:30:00，价格：8.500，盈亏：7.89%", body)
+
+        self.assertIn("### 🟡 持有标的（000003.SZ）· 持有", body)
+        self.assertIn("买入信号：2026-03-03 09:30:00，价格：8.500", body)
+        self.assertIn("浮动盈亏：浮盈7.89%", body)
+
+        self.assertIn("### ⚪ 观望标的（000004.SZ）· 空仓", body)
         self.assertIn("上次买入：2026-02-01 09:30:00，价格：6.123", body)
         self.assertIn("上次卖出：2026-02-15 09:30:00，价格：6.789", body)
 
@@ -162,11 +240,107 @@ class BuildDigestTests(unittest.TestCase):
 
         title, body = digest.build_digest(reports, target_date)
 
-        self.assertEqual(title, "[2026-03-10] 无交易信号")
-        self.assertIn("- 持有：1", body)
+        self.assertEqual(title, "📊 [2026-03-10] 无交易信号")
+        self.assertIn("🟡 持有 1", body)
 
     def test_build_digest_uses_empty_title_when_no_data(self):
         title, body = digest.build_digest([], date(2026, 3, 10), "no_json")
+
+        self.assertEqual(title, "[2026-03-10] 无任何数据可用")
+        self.assertIn("未找到可用于汇总的当日 JSON 数据", body)
+
+    def test_build_digest_includes_rotation_holding_with_pnl(self):
+        target_date = date(2026, 7, 25)
+        rotation_reports = [
+            make_rotation_report("momentum-top1", "动量轮动 Top-1", "2026-07-25"),
+        ]
+
+        title, body = digest.build_digest([], target_date, "no_matching_reports", rotation_reports)
+
+        self.assertEqual(title, "📊 [2026-07-25] 无交易信号")
+        self.assertIn("🟡 动量轮动 Top-1（momentum-top1）持有 浮盈2.86%", body)
+        self.assertIn("### 🟡 动量轮动 Top-1（momentum-top1）· 持有", body)
+        self.assertIn(
+            "当前持仓：159915.SZ，入场：2026-07-21，入场价：3.500，当前价：3.600", body
+        )
+        self.assertIn("浮动盈亏：浮盈2.86%", body)
+        self.assertIn("下次预期动作：持有（动量最强仍为 159915.SZ）", body)
+
+    def test_build_digest_rotation_buy_today(self):
+        target_date = date(2026, 7, 25)
+        rotation_reports = [
+            make_rotation_report(
+                "momentum-top1",
+                "动量轮动 Top-1",
+                "2026-07-25",
+                currentHolding={
+                    "symbol": "513100.SS",
+                    "name": "513100.SS",
+                    "since": "2026-07-25",
+                    "entryPrice": 2.1,
+                    "currentPrice": 2.1,
+                    "unrealizedPnlPct": 0.0,
+                },
+            ),
+        ]
+
+        title, body = digest.build_digest([], target_date, "no_matching_reports", rotation_reports)
+
+        self.assertEqual(title, "📊 [2026-07-25] 1个交易信号")
+        self.assertIn("🟢 动量轮动 Top-1（momentum-top1）买入", body)
+
+    def test_build_digest_rotation_exit_with_no_holding(self):
+        target_date = date(2026, 7, 25)
+        rotation_reports = [
+            make_rotation_report(
+                "momentum-top1",
+                "动量轮动 Top-1",
+                "2026-07-25",
+                currentHolding=None,
+                nextSignal={"action": "EXIT", "reason": "所有标的动量都低于阈值或为 NaN，下次预期空仓"},
+            ),
+        ]
+
+        title, body = digest.build_digest([], target_date, "no_matching_reports", rotation_reports)
+
+        self.assertEqual(title, "📊 [2026-07-25] 无交易信号")
+        self.assertIn("⚪ 动量轮动 Top-1（momentum-top1）空仓", body)
+        self.assertIn("当前持仓：空仓", body)
+        self.assertIn("下次预期动作：清仓（所有标的动量都低于阈值或为 NaN，下次预期空仓）", body)
+
+    def test_build_digest_rotation_sell_today(self):
+        target_date = date(2026, 7, 25)
+        rotation_reports = [
+            make_rotation_report(
+                "momentum-top1",
+                "动量轮动 Top-1",
+                "2026-07-25",
+                currentHolding=None,
+                rotations=[
+                    {
+                        "symbol": "159915.SZ",
+                        "entryDate": "2026-07-10",
+                        "exitDate": "2026-07-25",
+                        "entryPrice": 3.5,
+                        "exitPrice": 3.8,
+                        "size": 1000,
+                        "holdingDays": 15,
+                        "periodReturnPct": 8.57,
+                        "pnl": 300.0,
+                    }
+                ],
+            ),
+        ]
+
+        title, body = digest.build_digest([], target_date, "no_matching_reports", rotation_reports)
+
+        self.assertEqual(title, "📊 [2026-07-25] 1个交易信号")
+        self.assertIn("🔴 动量轮动 Top-1（momentum-top1）卖出 浮盈8.57%", body)
+        self.assertIn("卖出标的：159915.SZ，入场：2026-07-10，价格：3.500，出场价：3.800", body)
+        self.assertIn("本段收益：浮盈8.57%", body)
+
+    def test_build_digest_no_data_when_reports_and_rotation_both_empty(self):
+        title, body = digest.build_digest([], date(2026, 3, 10), "no_json", [])
 
         self.assertEqual(title, "[2026-03-10] 无任何数据可用")
         self.assertIn("未找到可用于汇总的当日 JSON 数据", body)

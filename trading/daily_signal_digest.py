@@ -24,6 +24,13 @@ ACTION_ALIASES = {
     "OBSERVE": "观望",
     "观察": "观望",
 }
+ROTATION_ACTION_LABELS = {
+    "HOLD": "持有",
+    "ROTATE": "换仓",
+    "EXIT": "清仓",
+}
+ACTION_EMOJI = {"买入": "🟢", "卖出": "🔴", "持有": "🟡", "观望": "⚪"}
+ACTION_DISPLAY_LABEL = {"买入": "买入", "卖出": "卖出", "持有": "持有", "观望": "空仓"}
 
 
 @dataclass(frozen=True)
@@ -33,6 +40,17 @@ class ReportRecord:
     action: str
     symbol: str
     name: str
+
+
+@dataclass(frozen=True)
+class DigestItem:
+    """标的/策略在日报里的统一展示单元，单标的和动量轮动策略共用同一套渲染逻辑。"""
+
+    key: str
+    name: str
+    action: str
+    overview_suffix: str
+    detail_lines: tuple[str, ...]
 
 
 def parse_args() -> argparse.Namespace:
@@ -161,6 +179,41 @@ def load_reports(data_dir: Path, target_date: date) -> tuple[list[ReportRecord],
     return reports, warnings, reason
 
 
+def load_rotation_reports(data_dir: Path, target_date: date) -> tuple[list[dict], list[str]]:
+    """加载动量轮动策略报告（rotation-v1 schema，位于 data_dir/rotation/*.json）。"""
+    rotation_dir = data_dir / "rotation"
+    if not rotation_dir.exists():
+        return [], []
+
+    json_files = sorted(rotation_dir.glob("*.json"))
+    warnings: list[str] = []
+    reports: list[dict] = []
+    target_date_str = target_date.isoformat()
+
+    for json_file in json_files:
+        try:
+            raw = json.loads(json_file.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            warnings.append(f"跳过损坏的轮动 JSON: {json_file} ({exc})")
+            continue
+
+        if not isinstance(raw, dict):
+            warnings.append(f"跳过非对象轮动 JSON: {json_file}")
+            continue
+
+        if raw.get("reportDate") != target_date_str:
+            continue
+
+        if not raw.get("strategyId"):
+            warnings.append(f"跳过缺少 strategyId 的轮动 JSON: {json_file}")
+            continue
+
+        reports.append(raw)
+
+    reports.sort(key=lambda item: str(item.get("strategyId") or ""))
+    return reports, warnings
+
+
 def extract_latest_price(report: dict, fallback_action: str | None = None) -> tuple[str, str]:
     latest_signal = report.get("latestSignal") or {}
     timestamp = str(latest_signal.get("timestamp") or "暂无")
@@ -234,74 +287,154 @@ def find_matching_buy_for_latest_sell(trades: Iterable[dict] | None) -> dict | N
     return matching_buy
 
 
-def build_entry_lines(record: ReportRecord) -> list[str]:
+def format_pnl_label(value: object) -> str:
+    """返回如 '浮盈34.48%' / '浮亏3.20%' / '暂无' 的简短盈亏标签。"""
+    if value is None or value == "":
+        return "暂无"
+    try:
+        pct = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    label = "浮盈" if pct >= 0 else "浮亏"
+    return f"{label}{abs(pct):.2f}%"
+
+
+def build_symbol_item(record: ReportRecord) -> DigestItem:
     raw = record.raw
-    lines = [f"## [{record.symbol}][{record.name}] - [{record.action}]"]
+    action = record.action
+    overview_suffix = ""
+    detail_lines: list[str] = []
 
-    if record.action == "买入":
+    if action == "买入":
         signal_time, signal_price = extract_latest_price(raw, "BUY")
-        lines.append(f"买入信号：{signal_time}，价格：{signal_price}")
-        return lines
+        detail_lines.append(f"买入信号：{signal_time}，价格：{signal_price}")
 
-    if record.action == "卖出":
+    elif action == "卖出":
         trades = raw.get("recentTrades")
         matching_buy = find_matching_buy_for_latest_sell(trades)
         sell_trade = find_latest_trade(trades, "SELL")
         sell_time, sell_price = extract_latest_price(raw, "SELL")
-        trigger_reason = "暂无"
-        if sell_trade:
-            trigger_reason = str(sell_trade.get("reason") or "暂无")
+        trigger_reason = str(sell_trade.get("reason") or "暂无") if sell_trade else "暂无"
+
         if matching_buy:
-            lines.append(
+            detail_lines.append(
                 f"买入信号：{format_trade_date(matching_buy.get('date'))}，价格：{format_price(matching_buy.get('price'))}"
             )
         else:
-            lines.append("买入信号：暂无，价格：暂无")
+            detail_lines.append("买入信号：暂无，价格：暂无")
 
         if sell_trade and raw.get("latestSignal", {}).get("prices", {}).get("close") is None:
             sell_time = format_trade_date(sell_trade.get("date"))
             sell_price = format_price(sell_trade.get("price"))
 
-        lines.append(f"卖出信号：{sell_time}，价格：{sell_price}")
-        lines.append(f"触发条件：{trigger_reason}")
-        return lines
+        detail_lines.append(f"卖出信号：{sell_time}，价格：{sell_price}")
+        detail_lines.append(f"触发条件：{trigger_reason}")
 
-    if record.action == "持有":
+    elif action == "持有":
         position_info = raw.get("positionInfo") or {}
         entry_date = str(position_info.get("entry_date") or "暂无")
         entry_price = format_price(position_info.get("entry_price"))
-        pnl_pct = format_percent(position_info.get("unrealized_pnl_pct"))
-        lines.append(
-            f"当前持仓买入信号：{entry_date}，价格：{entry_price}，盈亏：{pnl_pct}"
-        )
-        return lines
+        pnl_label = format_pnl_label(position_info.get("unrealized_pnl_pct"))
+        detail_lines.append(f"买入信号：{entry_date}，价格：{entry_price}")
+        detail_lines.append(f"浮动盈亏：{pnl_label}")
+        overview_suffix = pnl_label
 
-    latest_buy = find_latest_trade(raw.get("recentTrades"), "BUY")
-    latest_sell = find_latest_trade(raw.get("recentTrades"), "SELL")
-    if latest_buy:
-        lines.append(
-            f"上次买入：{format_trade_date(latest_buy.get('date'))}，价格：{format_price(latest_buy.get('price'))}"
-        )
     else:
-        lines.append("上次买入：暂无，价格：暂无")
+        latest_buy = find_latest_trade(raw.get("recentTrades"), "BUY")
+        latest_sell = find_latest_trade(raw.get("recentTrades"), "SELL")
+        if latest_buy:
+            detail_lines.append(
+                f"上次买入：{format_trade_date(latest_buy.get('date'))}，价格：{format_price(latest_buy.get('price'))}"
+            )
+        else:
+            detail_lines.append("上次买入：暂无，价格：暂无")
 
-    if latest_sell:
-        lines.append(
-            f"上次卖出：{format_trade_date(latest_sell.get('date'))}，价格：{format_price(latest_sell.get('price'))}"
-        )
+        if latest_sell:
+            detail_lines.append(
+                f"上次卖出：{format_trade_date(latest_sell.get('date'))}，价格：{format_price(latest_sell.get('price'))}"
+            )
+        else:
+            detail_lines.append("上次卖出：暂无，价格：暂无")
+
+    return DigestItem(
+        key=record.symbol,
+        name=record.name,
+        action=action,
+        overview_suffix=overview_suffix,
+        detail_lines=tuple(detail_lines),
+    )
+
+
+def build_rotation_item(raw: dict, target_date_str: str) -> DigestItem:
+    strategy_id = str(raw.get("strategyId") or "").strip()
+    strategy_name = str(raw.get("strategyName") or strategy_id).strip()
+    holding = raw.get("currentHolding")
+    rotations = raw.get("rotations") or []
+    next_signal = raw.get("nextSignal") or {}
+
+    exit_today = next((r for r in rotations if r.get("exitDate") == target_date_str), None)
+
+    if holding and holding.get("since") == target_date_str:
+        action = "买入"
+    elif not holding:
+        action = "卖出" if exit_today else "观望"
     else:
-        lines.append("上次卖出：暂无，价格：暂无")
+        action = "持有"
 
-    return lines
+    overview_suffix = ""
+    detail_lines: list[str] = []
+
+    if holding:
+        symbol = holding.get("symbol") or "暂无"
+        name = holding.get("name") or symbol
+        label = symbol if name == symbol else f"{symbol}（{name}）"
+        pnl_label = format_pnl_label(holding.get("unrealizedPnlPct"))
+        detail_lines.append(
+            f"当前持仓：{label}，入场：{holding.get('since') or '暂无'}，"
+            f"入场价：{format_price(holding.get('entryPrice'))}，"
+            f"当前价：{format_price(holding.get('currentPrice'))}"
+        )
+        detail_lines.append(f"浮动盈亏：{pnl_label}")
+        overview_suffix = pnl_label
+    elif action == "卖出" and exit_today:
+        realized_label = format_pnl_label(exit_today.get("periodReturnPct"))
+        detail_lines.append(
+            f"卖出标的：{exit_today.get('symbol') or '暂无'}，"
+            f"入场：{exit_today.get('entryDate') or '暂无'}，"
+            f"价格：{format_price(exit_today.get('entryPrice'))}，"
+            f"出场价：{format_price(exit_today.get('exitPrice'))}"
+        )
+        detail_lines.append(f"本段收益：{realized_label}")
+        overview_suffix = realized_label
+    else:
+        detail_lines.append("当前持仓：空仓")
+
+    next_action_label = ROTATION_ACTION_LABELS.get(str(next_signal.get("action") or "").upper(), "未知")
+    reason = str(next_signal.get("reason") or "暂无")
+    detail_lines.append(f"下次预期动作：{next_action_label}（{reason}）")
+
+    return DigestItem(
+        key=strategy_id,
+        name=strategy_name,
+        action=action,
+        overview_suffix=overview_suffix,
+        detail_lines=tuple(detail_lines),
+    )
 
 
-def build_digest(reports: list[ReportRecord], target_date: date, reason: str | None = None) -> tuple[str, str]:
+def build_digest(
+    reports: list[ReportRecord],
+    target_date: date,
+    reason: str | None = None,
+    rotation_reports: list[dict] | None = None,
+) -> tuple[str, str]:
+    rotation_reports = rotation_reports or []
     date_str = target_date.isoformat()
-    if reason in {"missing_dir", "no_json", "no_matching_reports"} or not reports:
+    if not reports and not rotation_reports:
         title = f"[{date_str}] 无任何数据可用"
         body = "\n".join(
             [
-                "# 交易信号日报",
+                "# 📊 交易信号日报",
                 f"- 日期：{date_str}",
                 "- 状态：无任何数据可用",
                 "- 说明：未找到可用于汇总的当日 JSON 数据。",
@@ -309,34 +442,44 @@ def build_digest(reports: list[ReportRecord], target_date: date, reason: str | N
         )
         return title, body
 
+    items = [build_symbol_item(record) for record in reports]
+    items.extend(build_rotation_item(raw, date_str) for raw in rotation_reports)
+    items.sort(key=lambda item: (ACTION_PRIORITY.get(item.action, 99), item.key))
+
     counts = {
-        "买入": sum(1 for report in reports if report.action == "买入"),
-        "卖出": sum(1 for report in reports if report.action == "卖出"),
-        "持有": sum(1 for report in reports if report.action == "持有"),
-        "观望": sum(1 for report in reports if report.action == "观望"),
+        label: sum(1 for item in items if item.action == label)
+        for label in ("买入", "卖出", "持有", "观望")
     }
     trade_signal_count = counts["买入"] + counts["卖出"]
     title = (
-        f"[{date_str}] {trade_signal_count}个交易信号"
+        f"📊 [{date_str}] {trade_signal_count}个交易信号"
         if trade_signal_count
-        else f"[{date_str}] 无交易信号"
+        else f"📊 [{date_str}] 无交易信号"
     )
 
     lines = [
-        "# 交易信号日报",
-        f"- 日期：{date_str}",
-        f"- 交易信号数：{trade_signal_count}",
-        f"- 买入：{counts['买入']}",
-        f"- 卖出：{counts['卖出']}",
-        f"- 持有：{counts['持有']}",
-        f"- 观望：{counts['观望']}",
+        "# 📊 交易信号日报",
+        f"📅 日期：{date_str}",
+        f"{ACTION_EMOJI['买入']} 买入 {counts['买入']}　"
+        f"{ACTION_EMOJI['卖出']} 卖出 {counts['卖出']}　"
+        f"{ACTION_EMOJI['持有']} 持有 {counts['持有']}　"
+        f"{ACTION_EMOJI['观望']} 空仓 {counts['观望']}",
         "",
+        "## 🎯 信号总览",
     ]
+    for item in items:
+        suffix = f" {item.overview_suffix}" if item.overview_suffix else ""
+        lines.append(
+            f"{ACTION_EMOJI[item.action]} {item.name}（{item.key}）"
+            f"{ACTION_DISPLAY_LABEL[item.action]}{suffix}"
+        )
 
-    for index, report in enumerate(reports):
-        if index > 0:
-            lines.append("")
-        lines.extend(build_entry_lines(report))
+    lines.append("")
+    lines.append("## 📌 详情")
+    for item in items:
+        lines.append("")
+        lines.append(f"### {ACTION_EMOJI[item.action]} {item.name}（{item.key}）· {ACTION_DISPLAY_LABEL[item.action]}")
+        lines.extend(item.detail_lines)
 
     return title, "\n".join(lines)
 
@@ -346,15 +489,6 @@ def format_price(value: object) -> str:
         return "暂无"
     try:
         return f"{float(value):.3f}"
-    except (TypeError, ValueError):
-        return str(value)
-
-
-def format_percent(value: object) -> str:
-    if value is None or value == "":
-        return "暂无"
-    try:
-        return f"{float(value):.2f}%"
     except (TypeError, ValueError):
         return str(value)
 
@@ -433,11 +567,13 @@ def main() -> int:
     target_date = args.target_date or today_in_timezone()
     data_dir = Path(args.data_dir)
     reports, warnings, reason = load_reports(data_dir, target_date)
+    rotation_reports, rotation_warnings = load_rotation_reports(data_dir, target_date)
+    warnings.extend(rotation_warnings)
 
     for warning in warnings:
         print(f"[WARN] {warning}", file=sys.stderr)
 
-    title, body = build_digest(reports, target_date, reason)
+    title, body = build_digest(reports, target_date, reason, rotation_reports)
 
     if args.dry_run:
         print(title)
