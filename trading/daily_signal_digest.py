@@ -459,10 +459,10 @@ def build_digest(
 
     lines = [
         "# 📊 交易信号日报",
-        f"📅 日期：{date_str}",
-        f"{ACTION_EMOJI['买入']} 买入 {counts['买入']}　"
-        f"{ACTION_EMOJI['卖出']} 卖出 {counts['卖出']}　"
-        f"{ACTION_EMOJI['持有']} 持有 {counts['持有']}　"
+        f"📅 {date_str}",
+        f"{ACTION_EMOJI['买入']} 买入 {counts['买入']} ｜ "
+        f"{ACTION_EMOJI['卖出']} 卖出 {counts['卖出']} ｜ "
+        f"{ACTION_EMOJI['持有']} 持有 {counts['持有']} ｜ "
         f"{ACTION_EMOJI['观望']} 空仓 {counts['观望']}",
         "",
         "## 🎯 信号总览",
@@ -470,16 +470,21 @@ def build_digest(
     for item in items:
         suffix = f" {item.overview_suffix}" if item.overview_suffix else ""
         lines.append(
-            f"{ACTION_EMOJI[item.action]} {item.name}（{item.key}）"
+            f"- {ACTION_EMOJI[item.action]} {item.name}（{item.key}）"
             f"{ACTION_DISPLAY_LABEL[item.action]}{suffix}"
         )
 
     lines.append("")
+    lines.append("---")
+    lines.append("")
     lines.append("## 📌 详情")
-    for item in items:
+    for index, item in enumerate(items):
+        if index > 0:
+            lines.append("")
+            lines.append("---")
         lines.append("")
         lines.append(f"### {ACTION_EMOJI[item.action]} {item.name}（{item.key}）· {ACTION_DISPLAY_LABEL[item.action]}")
-        lines.extend(item.detail_lines)
+        lines.extend(f"- {detail_line}" for detail_line in item.detail_lines)
 
     return title, "\n".join(lines)
 
