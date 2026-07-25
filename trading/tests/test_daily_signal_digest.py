@@ -129,6 +129,30 @@ class FormatPnlLabelTests(unittest.TestCase):
         self.assertEqual(digest.format_pnl_label(None), "暂无")
 
 
+class BaseStrategyNameTests(unittest.TestCase):
+    def test_strips_trailing_candidate_pool_in_chinese_parens(self):
+        self.assertEqual(
+            digest.base_strategy_name("动量轮动 Top-1（创业板/纳指/黄金）"), "动量轮动 Top-1"
+        )
+
+    def test_strips_trailing_candidate_pool_in_ascii_parens(self):
+        self.assertEqual(digest.base_strategy_name("Momentum Top-1(A/B/C)"), "Momentum Top-1")
+
+    def test_returns_unchanged_when_no_parens(self):
+        self.assertEqual(digest.base_strategy_name("动量轮动 Top-1"), "动量轮动 Top-1")
+
+
+class ResolveSymbolNameTests(unittest.TestCase):
+    def test_known_symbol_falls_back_to_chinese_name_when_raw_name_matches_symbol(self):
+        self.assertEqual(digest.resolve_symbol_name("518880.SS", "518880.SS"), "华安易富黄金ETF")
+
+    def test_unknown_symbol_falls_back_to_symbol_itself(self):
+        self.assertEqual(digest.resolve_symbol_name("000001.SZ", "000001.SZ"), "000001.SZ")
+
+    def test_prefers_real_raw_name_over_known_map(self):
+        self.assertEqual(digest.resolve_symbol_name("518880.SS", "黄金ETF别名"), "黄金ETF别名")
+
+
 class BuildDigestTests(unittest.TestCase):
     def test_build_digest_formats_all_actions(self):
         target_date = date(2026, 3, 10)
@@ -258,12 +282,25 @@ class BuildDigestTests(unittest.TestCase):
         title, body = digest.build_digest([], target_date, "no_matching_reports", rotation_reports)
 
         self.assertEqual(title, "📊 [2026-07-25] 无交易信号")
-        self.assertIn("🟡 动量轮动 Top-1（momentum-top1）持有 浮盈2.86%", body)
-        self.assertIn("### 🟡 动量轮动 Top-1（momentum-top1）· 持有", body)
+        self.assertIn("🟡 动量轮动 Top-1 · 创业板ETF（momentum-top1）持有 浮盈2.86%", body)
+        self.assertIn("### 🟡 动量轮动 Top-1 · 创业板ETF（momentum-top1）· 持有", body)
         self.assertIn(
-            "当前持仓：159915.SZ，入场：2026-07-21，入场价：3.500，当前价：3.600", body
+            "当前持仓：159915.SZ（创业板ETF），入场：2026-07-21，入场价：3.500，当前价：3.600", body
         )
         self.assertIn("浮动盈亏：浮盈2.86%", body)
+
+    def test_build_digest_rotation_strategy_name_drops_candidate_pool_suffix(self):
+        target_date = date(2026, 7, 25)
+        rotation_reports = [
+            make_rotation_report(
+                "momentum-top1", "动量轮动 Top-1（创业板/纳指/黄金）", "2026-07-25"
+            ),
+        ]
+
+        _, body = digest.build_digest([], target_date, "no_matching_reports", rotation_reports)
+
+        self.assertIn("🟡 动量轮动 Top-1 · 创业板ETF（momentum-top1）持有", body)
+        self.assertNotIn("创业板/纳指/黄金", body)
         self.assertIn("下次预期动作：持有（动量最强仍为 159915.SZ）", body)
 
     def test_build_digest_rotation_buy_today(self):
@@ -287,7 +324,7 @@ class BuildDigestTests(unittest.TestCase):
         title, body = digest.build_digest([], target_date, "no_matching_reports", rotation_reports)
 
         self.assertEqual(title, "📊 [2026-07-25] 1个交易信号")
-        self.assertIn("🟢 动量轮动 Top-1（momentum-top1）买入", body)
+        self.assertIn("🟢 动量轮动 Top-1 · 国泰纳斯达克100ETF（momentum-top1）买入", body)
 
     def test_build_digest_rotation_exit_with_no_holding(self):
         target_date = date(2026, 7, 25)
@@ -304,7 +341,7 @@ class BuildDigestTests(unittest.TestCase):
         title, body = digest.build_digest([], target_date, "no_matching_reports", rotation_reports)
 
         self.assertEqual(title, "📊 [2026-07-25] 无交易信号")
-        self.assertIn("⚪ 动量轮动 Top-1（momentum-top1）空仓", body)
+        self.assertIn("⚪ 动量轮动 Top-1 · 空仓（momentum-top1）空仓", body)
         self.assertIn("当前持仓：空仓", body)
         self.assertIn("下次预期动作：清仓（所有标的动量都低于阈值或为 NaN，下次预期空仓）", body)
 
@@ -335,8 +372,8 @@ class BuildDigestTests(unittest.TestCase):
         title, body = digest.build_digest([], target_date, "no_matching_reports", rotation_reports)
 
         self.assertEqual(title, "📊 [2026-07-25] 1个交易信号")
-        self.assertIn("🔴 动量轮动 Top-1（momentum-top1）卖出 浮盈8.57%", body)
-        self.assertIn("卖出标的：159915.SZ，入场：2026-07-10，价格：3.500，出场价：3.800", body)
+        self.assertIn("🔴 动量轮动 Top-1 · 已清仓创业板ETF（momentum-top1）卖出 浮盈8.57%", body)
+        self.assertIn("卖出标的：159915.SZ（创业板ETF），入场：2026-07-10，价格：3.500，出场价：3.800", body)
         self.assertIn("本段收益：浮盈8.57%", body)
 
     def test_build_digest_no_data_when_reports_and_rotation_both_empty(self):

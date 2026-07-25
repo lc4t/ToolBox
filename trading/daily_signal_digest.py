@@ -31,6 +31,15 @@ ROTATION_ACTION_LABELS = {
 }
 ACTION_EMOJI = {"买入": "🟢", "卖出": "🔴", "持有": "🟡", "观望": "⚪"}
 ACTION_DISPLAY_LABEL = {"买入": "买入", "卖出": "卖出", "持有": "持有", "观望": "空仓"}
+# rotation-v1 JSON 没配 DB 名称查询时，currentHolding.name 会退化成 symbol 本身，
+# 推送里就看不出持有的到底是黄金 ETF 还是别的。候选池固定且很小，这里兜底一份中文名。
+KNOWN_SYMBOL_NAMES = {
+    "159915.SZ": "创业板ETF",
+    "513100.SS": "国泰纳斯达克100ETF",
+    "513100.SH": "国泰纳斯达克100ETF",
+    "518880.SS": "华安易富黄金ETF",
+    "518880.SH": "华安易富黄金ETF",
+}
 
 
 @dataclass(frozen=True)
@@ -287,6 +296,21 @@ def find_matching_buy_for_latest_sell(trades: Iterable[dict] | None) -> dict | N
     return matching_buy
 
 
+def resolve_symbol_name(symbol: str, raw_name: str | None = None) -> str:
+    if raw_name and raw_name != symbol:
+        return raw_name
+    return KNOWN_SYMBOL_NAMES.get(symbol, symbol)
+
+
+def base_strategy_name(strategy_name: str) -> str:
+    """策略名常年带着完整候选池，比如"动量轮动 Top-1（创业板/纳指/黄金）"——只保留前缀，
+    候选池是固定配置，不是"现在持有什么"的答案，放进总览一行会太长又没信息量。"""
+    for sep in ("（", "("):
+        if sep in strategy_name:
+            return strategy_name.split(sep, 1)[0].strip() or strategy_name
+    return strategy_name
+
+
 def format_pnl_label(value: object) -> str:
     """返回如 '浮盈34.48%' / '浮亏3.20%' / '暂无' 的简短盈亏标签。"""
     if value is None or value == "":
@@ -368,6 +392,7 @@ def build_symbol_item(record: ReportRecord) -> DigestItem:
 def build_rotation_item(raw: dict, target_date_str: str) -> DigestItem:
     strategy_id = str(raw.get("strategyId") or "").strip()
     strategy_name = str(raw.get("strategyName") or strategy_id).strip()
+    base_name = base_strategy_name(strategy_name)
     holding = raw.get("currentHolding")
     rotations = raw.get("rotations") or []
     next_signal = raw.get("nextSignal") or {}
@@ -383,11 +408,12 @@ def build_rotation_item(raw: dict, target_date_str: str) -> DigestItem:
 
     overview_suffix = ""
     detail_lines: list[str] = []
+    display_name = f"{base_name} · 空仓"
 
     if holding:
         symbol = holding.get("symbol") or "暂无"
-        name = holding.get("name") or symbol
-        label = symbol if name == symbol else f"{symbol}（{name}）"
+        held_name = resolve_symbol_name(symbol, holding.get("name"))
+        label = symbol if held_name == symbol else f"{symbol}（{held_name}）"
         pnl_label = format_pnl_label(holding.get("unrealizedPnlPct"))
         detail_lines.append(
             f"当前持仓：{label}，入场：{holding.get('since') or '暂无'}，"
@@ -396,16 +422,20 @@ def build_rotation_item(raw: dict, target_date_str: str) -> DigestItem:
         )
         detail_lines.append(f"浮动盈亏：{pnl_label}")
         overview_suffix = pnl_label
+        display_name = f"{base_name} · {held_name}"
     elif action == "卖出" and exit_today:
+        sold_symbol = exit_today.get("symbol") or "暂无"
+        sold_name = resolve_symbol_name(sold_symbol)
         realized_label = format_pnl_label(exit_today.get("periodReturnPct"))
         detail_lines.append(
-            f"卖出标的：{exit_today.get('symbol') or '暂无'}，"
+            f"卖出标的：{sold_symbol}（{sold_name}），"
             f"入场：{exit_today.get('entryDate') or '暂无'}，"
             f"价格：{format_price(exit_today.get('entryPrice'))}，"
             f"出场价：{format_price(exit_today.get('exitPrice'))}"
         )
         detail_lines.append(f"本段收益：{realized_label}")
         overview_suffix = realized_label
+        display_name = f"{base_name} · 已清仓{sold_name}"
     else:
         detail_lines.append("当前持仓：空仓")
 
@@ -415,7 +445,7 @@ def build_rotation_item(raw: dict, target_date_str: str) -> DigestItem:
 
     return DigestItem(
         key=strategy_id,
-        name=strategy_name,
+        name=display_name,
         action=action,
         overview_suffix=overview_suffix,
         detail_lines=tuple(detail_lines),
