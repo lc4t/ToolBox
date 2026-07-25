@@ -225,7 +225,7 @@ def load_rotation_reports(data_dir: Path, target_date: date) -> tuple[list[dict]
 
 def extract_latest_price(report: dict, fallback_action: str | None = None) -> tuple[str, str]:
     latest_signal = report.get("latestSignal") or {}
-    timestamp = str(latest_signal.get("timestamp") or "暂无")
+    timestamp = format_trade_date(latest_signal.get("timestamp"))
     prices = latest_signal.get("prices") or {}
     close_price = prices.get("close")
     if close_price is not None:
@@ -356,7 +356,7 @@ def build_symbol_item(record: ReportRecord) -> DigestItem:
 
     elif action == "持有":
         position_info = raw.get("positionInfo") or {}
-        entry_date = str(position_info.get("entry_date") or "暂无")
+        entry_date = format_trade_date(position_info.get("entry_date"))
         entry_price = format_price(position_info.get("entry_price"))
         pnl_label = format_pnl_label(position_info.get("unrealized_pnl_pct"))
         detail_lines.append(f"买入信号：{entry_date}，价格：{entry_price}")
@@ -416,7 +416,7 @@ def build_rotation_item(raw: dict, target_date_str: str) -> DigestItem:
         label = symbol if held_name == symbol else f"{symbol}（{held_name}）"
         pnl_label = format_pnl_label(holding.get("unrealizedPnlPct"))
         detail_lines.append(
-            f"当前持仓：{label}，入场：{holding.get('since') or '暂无'}，"
+            f"当前持仓：{label}，入场：{format_trade_date(holding.get('since'))}，"
             f"入场价：{format_price(holding.get('entryPrice'))}，"
             f"当前价：{format_price(holding.get('currentPrice'))}"
         )
@@ -429,7 +429,7 @@ def build_rotation_item(raw: dict, target_date_str: str) -> DigestItem:
         realized_label = format_pnl_label(exit_today.get("periodReturnPct"))
         detail_lines.append(
             f"卖出标的：{sold_symbol}（{sold_name}），"
-            f"入场：{exit_today.get('entryDate') or '暂无'}，"
+            f"入场：{format_trade_date(exit_today.get('entryDate'))}，"
             f"价格：{format_price(exit_today.get('entryPrice'))}，"
             f"出场价：{format_price(exit_today.get('exitPrice'))}"
         )
@@ -529,9 +529,14 @@ def format_price(value: object) -> str:
 
 
 def format_trade_date(value: object) -> str:
+    """只保留日期，不要时分秒——JSON 里的时间戳基本都是同一个开盘时刻，没有信息量，
+    只会让推送里的每一行变长、对不齐。"""
     if not value:
         return "暂无"
-    return str(value)
+    text = str(value).strip()
+    if not text:
+        return "暂无"
+    return text.split(" ", 1)[0].split("T", 1)[0]
 
 
 def parse_trade_datetime(value: object) -> datetime:

@@ -12,6 +12,7 @@ from db import DBClient
 import argparse
 import adata
 import pandas as pd
+import sys
 import time
 from yfinance.exceptions import YFRateLimitError
 
@@ -161,11 +162,11 @@ class ADataFetcher(DataFetcher):
                         "high": float(record["high"]),
                         "low": float(record["low"]),
                         "volume": int(record["volume"]),
-                        "amount": float(record["amount"]) if record["amount"] else None,
-                        "change": float(record["change"]) if record["change"] else None,
+                        "amount": float(record["amount"]) if pd.notna(record["amount"]) else None,
+                        "change": float(record["change"]) if pd.notna(record["change"]) else None,
                         "change_pct": (
                             float(record["change_pct"])
-                            if record["change_pct"]
+                            if pd.notna(record["change_pct"])
                             else None
                         ),
                     }
@@ -404,7 +405,7 @@ def main():
         logger.info("所有数据更新完成")
     else:
         logger.error("部分数据更新失败")
-        # exit(1)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

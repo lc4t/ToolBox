@@ -142,6 +142,21 @@ class BaseStrategyNameTests(unittest.TestCase):
         self.assertEqual(digest.base_strategy_name("动量轮动 Top-1"), "动量轮动 Top-1")
 
 
+class FormatTradeDateTests(unittest.TestCase):
+    def test_strips_time_component_with_space_separator(self):
+        self.assertEqual(digest.format_trade_date("2026-03-10 09:30:00"), "2026-03-10")
+
+    def test_strips_time_component_with_t_separator(self):
+        self.assertEqual(digest.format_trade_date("2026-03-10T09:30:00"), "2026-03-10")
+
+    def test_date_only_value_unchanged(self):
+        self.assertEqual(digest.format_trade_date("2026-03-10"), "2026-03-10")
+
+    def test_falsy_value_returns_placeholder(self):
+        self.assertEqual(digest.format_trade_date(None), "暂无")
+        self.assertEqual(digest.format_trade_date(""), "暂无")
+
+
 class ResolveSymbolNameTests(unittest.TestCase):
     def test_known_symbol_falls_back_to_chinese_name_when_raw_name_matches_symbol(self):
         self.assertEqual(digest.resolve_symbol_name("518880.SS", "518880.SS"), "华安易富黄金ETF")
@@ -235,20 +250,20 @@ class BuildDigestTests(unittest.TestCase):
         self.assertIn("⚪ 观望标的（000004.SZ）空仓", body)
 
         self.assertIn("### 🟢 买入标的（000001.SZ）· 买入", body)
-        self.assertIn("买入信号：2026-03-10 09:30:00，价格：10.123", body)
+        self.assertIn("买入信号：2026-03-10，价格：10.123", body)
 
         self.assertIn("### 🔴 卖出标的（000002.SZ）· 卖出", body)
-        self.assertIn("买入信号：2026-03-01 09:30:00，价格：9.876", body)
-        self.assertIn("卖出信号：2026-03-10 09:30:00，价格：11.321", body)
+        self.assertIn("买入信号：2026-03-01，价格：9.876", body)
+        self.assertIn("卖出信号：2026-03-10，价格：11.321", body)
         self.assertIn("触发条件：MA交叉卖出 [MA5=10.1 < MA20=10.5]", body)
 
         self.assertIn("### 🟡 持有标的（000003.SZ）· 持有", body)
-        self.assertIn("买入信号：2026-03-03 09:30:00，价格：8.500", body)
+        self.assertIn("买入信号：2026-03-03，价格：8.500", body)
         self.assertIn("浮动盈亏：浮盈7.89%", body)
 
         self.assertIn("### ⚪ 观望标的（000004.SZ）· 空仓", body)
-        self.assertIn("上次买入：2026-02-01 09:30:00，价格：6.123", body)
-        self.assertIn("上次卖出：2026-02-15 09:30:00，价格：6.789", body)
+        self.assertIn("上次买入：2026-02-01，价格：6.123", body)
+        self.assertIn("上次卖出：2026-02-15，价格：6.789", body)
 
     def test_build_digest_uses_no_signal_title_when_only_hold_and_watch(self):
         target_date = date(2026, 3, 10)

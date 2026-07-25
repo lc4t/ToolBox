@@ -1,3 +1,4 @@
+import math
 import os
 from datetime import datetime
 from decimal import Decimal
@@ -268,13 +269,55 @@ class DBClient:
             logger.error(f"Error updating symbol info: {e}")
             return False
 
+    @staticmethod
+    def _is_nan(value: Any) -> bool:
+        return isinstance(value, float) and math.isnan(value)
+
+    def _clean_trading_data(
+        self, data_list: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """写入前清洗一遍：开高低收缺失/NaN 的记录直接跳过（缺一天数据，
+        好过让整批 INSERT 因为一条脏数据全部失败——MySQL 不接受 NaN 字面量，
+        单条记录 NaN 曾导致过整批（上百条历史数据）静默写入失败，参见
+        db:upsert_trading_data 报错 "nan can not be used with MySQL"）。
+        非核心字段（成交额/涨跌幅等）NaN 则清成 None，不影响这一天写入。
+        """
+        price_fields = ["open_price", "close_price", "high", "low"]
+        optional_fields = ["volume", "amount", "change", "change_pct"]
+
+        cleaned: List[Dict[str, Any]] = []
+        skipped_dates = []
+        for item in data_list:
+            if any(self._is_nan(item.get(field)) for field in price_fields):
+                skipped_dates.append(str(item.get("date")))
+                continue
+            cleaned_item = item.copy()
+            for field in optional_fields:
+                if self._is_nan(cleaned_item.get(field)):
+                    cleaned_item[field] = None
+            cleaned.append(cleaned_item)
+
+        if skipped_dates:
+            symbol = data_list[0].get("symbol", "?") if data_list else "?"
+            logger.warning(
+                f"{symbol} 有 {len(skipped_dates)} 条记录开高低收缺失/NaN，"
+                f"已跳过（不影响其余 {len(cleaned)} 条正常数据写入）: {skipped_dates}"
+            )
+
+        return cleaned
+
     def upsert_trading_data(self, data_list: List[Dict[str, Any]]) -> bool:
         """插入或更新交易数据（如果数据已存在且有变化则更新）"""
+        cleaned_data = self._clean_trading_data(data_list)
+        if not cleaned_data:
+            logger.error("清洗后没有可写入的数据（全部记录都缺失开高低收）")
+            return False
+
         try:
             with self.Session() as session:
                 # 处理价格精度
                 processed_data = []
-                for data in data_list:
+                for data in cleaned_data:
                     processed_item = data.copy()
                     price_fields = ["open_price", "close_price", "high", "low"]
 
